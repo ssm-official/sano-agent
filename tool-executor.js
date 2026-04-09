@@ -803,31 +803,46 @@ const EXECUTORS = {
     }
   },
 
-  // ─── MEMORY: Remember and forget ───
+  // ─── MEMORY: Remember and forget (writes to user's isolated sandbox) ───
   remember: async (input, walletAddress, keypair, context) => {
-    if (!context?.userEmail || !context?.store) {
-      return { error: "Memory not available — sign in first." };
-    }
+    if (!context?.userEmail) return { error: "Sign in first." };
     const section = input.section || "Notes";
-    const updated = context.store.rememberFact(context.userEmail, input.fact, section);
-    return {
-      status: "saved",
-      fact: input.fact,
-      section,
-      message: `Got it. I'll remember that.`
-    };
+
+    // Prefer sandbox storage (isolated per user)
+    if (context.sandboxId && context.sandbox) {
+      try {
+        await context.sandbox.appendToMemory(context.sandboxId, input.fact, section);
+        return { status: "saved", fact: input.fact, section, message: `Got it. I'll remember that.` };
+      } catch (e) {
+        console.log("  [MEM] Sandbox write failed, falling back:", e.message);
+      }
+    }
+
+    // Fallback to legacy file storage
+    if (context.store) {
+      context.store.rememberFact(context.userEmail, input.fact, section);
+      return { status: "saved", fact: input.fact, section, message: `Got it. I'll remember that.` };
+    }
+
+    return { error: "Memory not available right now." };
   },
 
   forget: async (input, walletAddress, keypair, context) => {
-    if (!context?.userEmail || !context?.store) {
-      return { error: "Memory not available — sign in first." };
+    if (!context?.userEmail) return { error: "Sign in first." };
+
+    if (context.sandboxId && context.sandbox) {
+      try {
+        await context.sandbox.removeFromMemory(context.sandboxId, input.query);
+        return { status: "forgotten", query: input.query, message: `Removed entries matching "${input.query}".` };
+      } catch (e) { /* fall through */ }
     }
-    context.store.forgetFact(context.userEmail, input.query);
-    return {
-      status: "forgotten",
-      query: input.query,
-      message: `Removed entries matching "${input.query}".`
-    };
+
+    if (context.store) {
+      context.store.forgetFact(context.userEmail, input.query);
+      return { status: "forgotten", query: input.query, message: `Removed entries matching "${input.query}".` };
+    }
+
+    return { error: "Memory not available." };
   },
 
   // ─── DeFi (Savings/Interest) ───

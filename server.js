@@ -11,6 +11,7 @@ const fetch = require("node-fetch");
 const { Connection, PublicKey, LAMPORTS_PER_SOL, Keypair } = require("@solana/web3.js");
 const bs58 = require("bs58").default || require("bs58");
 const store = require("./agent-store");
+const sandbox = require("./sandbox-manager");
 
 const app = express();
 app.set("trust proxy", 1); // Trust Railway's reverse proxy
@@ -189,36 +190,24 @@ app.post("/api/auth/verify", async (req, res) => {
   // Get or create user
   let user = users.get(key);
   if (!user) {
-    // Brand new user — create an embedded Solana wallet
-    const keypair = Keypair.generate();
-    user = {
-      email: key,
-      wallet: keypair.publicKey.toBase58(),
-      walletSecret: bs58.encode(keypair.secretKey),
-      created: new Date().toISOString(),
-      agent_name: "SANO"
-    };
-    users.set(key, user);
-    store.saveUsers(users);
-
-    const initialMemory = `# Memory for ${key}
-
-## Profile
-- email: ${key}
-- account created: ${user.created}
-
-## Notes
-`;
-    store.saveMemory(key, initialMemory);
-    console.log(`  [USER] New user: ${key} -> wallet ${user.wallet}`);
-  } else if (!user.walletSecret) {
-    // User was auto-recovered without a secret key.
-    // DO NOT replace the wallet — that would orphan funds at the old address.
-    // Instead, mark it as locked and tell the client.
-    user.locked = true;
-    users.set(key, user);
-    store.saveUsers(users);
-    console.log(`  [USER] Wallet locked for ${key} (no secret) -> ${user.wallet}`);
+    // Brand new user — spin up their own sandbox with an isolated wallet
+    try {
+      const sbxResult = await sandbox.createUserSandbox(key);
+      user = {
+        email: key,
+        wallet: sbxResult.wallet,        // public key (server can know this)
+        sandbox_id: sbxResult.sandboxId,  // pointer to user's isolated env
+        created: new Date().toISOString(),
+        agent_name: "SANO"
+      };
+      // Note: walletSecret is NOT stored on the server. It lives only in the sandbox.
+      users.set(key, user);
+      store.saveUsers(users);
+      console.log(`  [USER] New user: ${key} -> sandbox ${user.sandbox_id} -> wallet ${user.wallet}`);
+    } catch (e) {
+      console.error(`  [USER] Failed to create sandbox for ${key}:`, e.message);
+      return res.json({ error: "Couldn't set up your account. Try again in a moment." });
+    }
   }
 
   // Create auth token
@@ -247,7 +236,7 @@ app.get("/", (req, res) => {
 app.use(express.static("public", { index: false }));
 
 // ─── Export Private Key (for self-custody backup) ───
-// SECURITY: This endpoint returns the user's secret key. Only use over HTTPS.
+// SECURITY: This endpoint returns the user's secret key from their sandbox.
 // In production: require step-up auth (re-confirm OTP) before exposing the key.
 app.post("/api/wallet/export", async (req, res) => {
   try {
@@ -255,12 +244,31 @@ app.post("/api/wallet/export", async (req, res) => {
     if (!email) return res.json({ error: "Email required" });
     const user = users.get(email.toLowerCase());
     if (!user) return res.json({ error: "User not found" });
-    if (!user.walletSecret) return res.json({ error: "Secret key unavailable for this wallet" });
-    res.json({
-      wallet: user.wallet,
-      private_key: user.walletSecret,
-      warning: "Anyone with this key controls your account. Save it somewhere safe and never share it."
-    });
+
+    // Read from sandbox if available
+    if (user.sandbox_id) {
+      try {
+        const wallet = await sandbox.getWallet(user.sandbox_id);
+        return res.json({
+          wallet: wallet.public_key,
+          private_key: wallet.secret_key,
+          warning: "Anyone with this key controls your account. Save it somewhere safe and never share it."
+        });
+      } catch (e) {
+        return res.json({ error: "Could not read wallet from sandbox: " + e.message });
+      }
+    }
+
+    // Legacy fallback
+    if (user.walletSecret) {
+      return res.json({
+        wallet: user.wallet,
+        private_key: user.walletSecret,
+        warning: "Anyone with this key controls your account. Save it somewhere safe and never share it."
+      });
+    }
+
+    res.json({ error: "Secret key unavailable for this wallet" });
   } catch (e) {
     res.json({ error: e.message });
   }
@@ -447,11 +455,13 @@ app.post("/api/chat", async (req, res) => {
     systemPrompt += `\nUser's account address: ${walletAddress}`;
   }
 
-  // Inject the user's memory
-  if (userEmail) {
-    const memory = store.loadMemory(userEmail);
-    if (memory) {
-      systemPrompt += `\n\n=== YOUR MEMORY ABOUT THIS USER ===
+  // Inject the user's memory (now from their isolated sandbox)
+  const userRecord = userEmail ? users.get(userEmail) : null;
+  if (userRecord?.sandbox_id) {
+    try {
+      const memory = await sandbox.readMemory(userRecord.sandbox_id);
+      if (memory) {
+        systemPrompt += `\n\n=== YOUR MEMORY ABOUT THIS USER ===
 This is what you remember about them from previous conversations. Use it to personalize your responses, skip questions you already know the answer to, and refer to past activity when relevant.
 
 ${memory}
@@ -459,6 +469,15 @@ ${memory}
 === END MEMORY ===
 
 When you learn something new about the user that would be useful to remember (their name, address, preferences, sizes, important dates, recurring needs), call the remember tool to save it. When something becomes outdated, use forget. Keep memory clean and useful.`;
+      }
+    } catch (e) {
+      console.log(`  [SBX] Could not read memory for ${userEmail}:`, e.message);
+    }
+  } else if (userEmail) {
+    // Legacy fallback for old users without sandbox
+    const memory = store.loadMemory(userEmail);
+    if (memory) {
+      systemPrompt += `\n\n=== YOUR MEMORY ABOUT THIS USER ===\n${memory}\n=== END MEMORY ===`;
     }
   }
 
@@ -500,25 +519,29 @@ When you learn something new about the user that would be useful to remember (th
           }
         } else if (event.type === "content_block_stop" && currentToolUse) {
           const toolInput = toolInputJson ? JSON.parse(toolInputJson) : {};
-          // Look up user's keypair for signing transactions
+
+          // Load user's keypair from THEIR sandbox (not from the server)
           let userKeypair = null;
-          if (walletAddress) {
-            for (const [, u] of users) {
-              if (u.wallet === walletAddress && u.walletSecret) {
-                try {
-                  userKeypair = Keypair.fromSecretKey(bs58.decode(u.walletSecret));
-                } catch (e) { console.log("  [WARN] Could not load keypair:", e.message); }
-                break;
-              }
+          if (userRecord?.sandbox_id) {
+            try {
+              userKeypair = await sandbox.getKeypair(userRecord.sandbox_id);
+            } catch (e) {
+              console.log("  [WARN] Could not load keypair from sandbox:", e.message);
             }
           }
-          // Pass user context (email, store) so memory and Bitrefill tools can work
+
+          // Pass user context — sandbox_id lets tools read/write memory in user's own env
           const toolResult = await executeTool(
             currentToolUse.name,
             toolInput,
             walletAddress,
             userKeypair,
-            { userEmail, store }
+            {
+              userEmail,
+              store,
+              sandbox,
+              sandboxId: userRecord?.sandbox_id || null
+            }
           );
 
           res.write(`data: ${JSON.stringify({
