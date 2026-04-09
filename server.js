@@ -12,6 +12,7 @@ const { Connection, PublicKey, LAMPORTS_PER_SOL, Keypair } = require("@solana/we
 const bs58 = require("bs58");
 
 const app = express();
+app.set("trust proxy", 1); // Trust Railway's reverse proxy
 app.use(express.json());
 
 // ─── Config ───
@@ -96,9 +97,11 @@ async function sendOTP(email, code) {
     }
   }
 
-  // Fallback: log code (in production, use SendGrid/Resend/Postmark)
+  // Send via Resend
   if (process.env.RESEND_API_KEY) {
     try {
+      // Use onboarding@resend.dev if no custom domain verified
+      const fromAddr = process.env.FROM_EMAIL || "SANO <onboarding@resend.dev>";
       const res = await fetch("https://api.resend.com/emails", {
         method: "POST",
         headers: {
@@ -106,20 +109,26 @@ async function sendOTP(email, code) {
           "Authorization": `Bearer ${process.env.RESEND_API_KEY}`
         },
         body: JSON.stringify({
-          from: process.env.FROM_EMAIL || "SANO <noreply@sano.app>",
+          from: fromAddr,
           to: email,
           subject: "Your SANO verification code",
-          html: `<div style="font-family:sans-serif;max-width:400px;margin:0 auto;padding:40px 20px">
-            <h2 style="margin-bottom:20px">Sign in to SANO</h2>
-            <p style="color:#666;margin-bottom:24px">Enter this code to continue:</p>
+          html: `<div style="font-family:sans-serif;max-width:400px;margin:0 auto;padding:40px 20px;color:#111">
+            <h2 style="margin-bottom:20px;font-size:20px">Sign in to SANO</h2>
+            <p style="color:#666;margin-bottom:24px;font-size:14px">Enter this code to continue:</p>
             <div style="font-size:32px;font-weight:700;letter-spacing:8px;text-align:center;padding:20px;background:#f5f5f5;border-radius:8px;margin-bottom:24px">${code}</div>
             <p style="color:#999;font-size:13px">This code expires in 10 minutes. If you didn't request this, ignore this email.</p>
           </div>`
         })
       });
-      if (res.ok) return true;
+      const resData = await res.json();
+      if (res.ok) {
+        console.log(`  [EMAIL] Sent to ${email} via Resend`);
+        return true;
+      } else {
+        console.log(`  [EMAIL] Resend error:`, resData);
+      }
     } catch (e) {
-      console.log("Resend fallback:", e.message);
+      console.log("  [EMAIL] Resend failed:", e.message);
     }
   }
 
