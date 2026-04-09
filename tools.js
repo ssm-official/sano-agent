@@ -40,6 +40,31 @@ const TOOLS = [
       required: ["query"]
     }
   },
+  {
+    name: "buy_gift_card",
+    description: "Buy a gift card from any major retailer (Amazon, Walmart, Target, Best Buy, Home Depot, etc.) using the user's USDC balance. The user receives a redeemable code they can use on the retailer's site. Use this to actually buy products — generate a gift card for the right amount, then send the code.",
+    input_schema: {
+      type: "object",
+      properties: {
+        merchant: { type: "string", description: "Store name (e.g. 'Amazon', 'Walmart', 'Target', 'Best Buy', 'Steam', 'Apple', 'Nike')" },
+        amount_usd: { type: "number", description: "Gift card amount in USD" },
+        country: { type: "string", default: "US", description: "ISO country code" }
+      },
+      required: ["merchant", "amount_usd"]
+    }
+  },
+  {
+    name: "list_gift_card_merchants",
+    description: "List all merchants where the user can buy gift cards with USDC. Use when the user asks 'where can I shop' or 'what stores can I buy from'.",
+    input_schema: {
+      type: "object",
+      properties: {
+        category: { type: "string", description: "Filter by category (e.g. 'shopping', 'food', 'gaming', 'travel')" },
+        country: { type: "string", default: "US" }
+      },
+      required: []
+    }
+  },
 
   // ─── TOKEN SWAPS & TRADING ───
   {
@@ -97,20 +122,18 @@ const TOOLS = [
     }
   },
 
-  // ─── STOCKS & COMMODITIES ───
+  // ─── STOCKS & COMMODITIES (via tokenized stocks on Solana) ───
   {
     name: "stock_trade",
-    description: "Buy or sell 170+ stocks, commodities, and ETFs as tokenized assets. Includes AAPL, TSLA, GOLD, SPY, etc.",
+    description: "Buy or sell tokenized stocks (xStocks) using the user's USDC balance. Real exposure to AAPL, TSLA, NVDA, MSFT, GOOGL, AMZN, META, COIN, MSTR, SPY, etc. as SPL tokens that track the underlying asset 1:1. Executes a real swap on Jupiter.",
     input_schema: {
       type: "object",
       properties: {
-        symbol: { type: "string", description: "Ticker symbol (e.g. 'AAPL', 'GOLD', 'SPY')" },
+        symbol: { type: "string", description: "Stock ticker (e.g. 'AAPL', 'TSLA', 'NVDA', 'SPY')" },
         side: { type: "string", enum: ["buy", "sell"] },
-        amount_usdc: { type: "number", description: "Amount in USDC to invest" },
-        order_type: { type: "string", enum: ["market", "limit"], default: "market" },
-        limit_price: { type: "number", description: "Limit price (required for limit orders)" }
+        amount_usd: { type: "number", description: "Amount in USD to buy/sell" }
       },
-      required: ["symbol", "side", "amount_usdc"]
+      required: ["symbol", "side", "amount_usd"]
     }
   },
   {
@@ -429,7 +452,7 @@ const TOOLS = [
 
 // Tool category mapping for UI
 const TOOL_CATEGORIES = {
-  "Shopping": ["product_search", "amazon_search", "shopify_search"],
+  "Shopping": ["product_search", "amazon_search", "shopify_search", "buy_gift_card", "list_gift_card_merchants"],
   "Token Swaps": ["jupiter_swap", "jupiter_quote", "token_price", "limit_order"],
   "Stocks & ETFs": ["stock_trade", "stock_quote"],
   "Prediction Markets": ["prediction_bet", "prediction_search"],

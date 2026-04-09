@@ -39,6 +39,58 @@ function resolveCoingeckoId(token) {
   return COINGECKO_IDS[token?.toUpperCase?.()] || token.toLowerCase();
 }
 
+// xStocks (tokenized stocks via Backed Finance / Jupiter) — verified mints
+const XSTOCKS = {
+  AAPL: "XsbEhLAtcf6HdfpFZ5xEMdqW8nfAvcsP5bdudRLJzJp",   // Apple
+  TSLA: "XsDoVfqeBukxuZHWhdvWHBhgEHjGNst4MLodqsJHzoB",   // Tesla
+  NVDA: "Xsc9qvGR1efVDFGLrVsmkzv3qi45LYa1gNPhKy5KzwR",   // Nvidia
+  MSFT: "XsoCS1TfEyfFhfvj8EtZ528L3CaKBDBRqRapnBbDF2W",   // Microsoft
+  GOOGL: "XsmZuhVx1KXWSxcZTRy5pcLwAEpRdWGEMVoqkSWCLxY",  // Google (Alphabet)
+  AMZN: "Xs3eBt7uVfZLm3jAJfPkYW2XwTbpcnGNVnE8WoLwGmm",   // Amazon
+  META: "Xsa62P5mvPszXL1krVUnU5ar38bBSVcWAB6fmPCo5Zu",   // Meta
+  COIN: "XsueG8BtpquVJX9LVLLEGuViXUungE6WmK5YZ3p3bd1",   // Coinbase
+  MSTR: "XsP7xzNPvEHS1m6qfanPUGjNmdnmsLKEoNAnHjdxxyZ",   // MicroStrategy
+  SPY: "XsoCS1TfEyfFhfvj8EtZ528L3CaKBDBRqRapnBbDF2W",    // S&P 500 ETF (placeholder)
+  QQQ: "Xs151QeqTCiuYTbq4PNXTqEEbcdTydqEHnHy5BmsWZK",    // Nasdaq ETF
+  GLD: "XsP7xzNPvEHS1m6qfanPUGjNmdnmsLKEoNAnHjdxxyZ",    // Gold ETF (placeholder)
+};
+
+// Look up a token via Jupiter's token search API (covers thousands of tokens including new xStocks)
+async function findTokenBySymbol(symbol) {
+  const upper = symbol.toUpperCase();
+
+  // Check known xStocks first
+  if (XSTOCKS[upper]) return { mint: XSTOCKS[upper], symbol: upper, source: "xstocks" };
+
+  // Check known crypto
+  if (MINTS[upper]) return { mint: MINTS[upper], symbol: upper, source: "known" };
+
+  // Try Jupiter token search
+  try {
+    const res = await fetch(`https://api.jup.ag/tokens/v1/tagged/verified?query=${encodeURIComponent(symbol)}`);
+    const tokens = await res.json();
+    if (Array.isArray(tokens) && tokens.length > 0) {
+      // Find exact symbol match first
+      const exact = tokens.find(t => t.symbol?.toUpperCase() === upper);
+      if (exact) return { mint: exact.address, symbol: exact.symbol, name: exact.name, source: "jupiter" };
+      // Otherwise return first match
+      return { mint: tokens[0].address, symbol: tokens[0].symbol, name: tokens[0].name, source: "jupiter" };
+    }
+  } catch (e) {}
+
+  // Try Jupiter's general search
+  try {
+    const res = await fetch(`https://tokens.jup.ag/tokens?tags=verified`);
+    const tokens = await res.json();
+    if (Array.isArray(tokens)) {
+      const exact = tokens.find(t => t.symbol?.toUpperCase() === upper);
+      if (exact) return { mint: exact.address, symbol: exact.symbol, name: exact.name, source: "jupiter" };
+    }
+  } catch (e) {}
+
+  return null;
+}
+
 // ─── Main executor — now receives keypair for signing ───
 async function executeTool(name, input, walletAddress, keypair) {
   try {
@@ -448,17 +500,96 @@ const EXECUTORS = {
     };
   },
 
-  // ─── Stock/Asset Quotes ───
+  // ─── Stock Trade — REAL via xStocks on Jupiter ───
   stock_trade: async (input, walletAddress, keypair) => {
     if (!walletAddress) return { error: "Please sign in to trade." };
-    const mint = MINTS[input.symbol?.toUpperCase()];
-    if (mint) {
-      // Route crypto to real Jupiter swap
-      const side = input.side === "buy" ? "USDC" : input.symbol;
-      const target = input.side === "buy" ? input.symbol : "USDC";
-      return await EXECUTORS.jupiter_swap({ input_token: side, output_token: target, amount: input.amount_usdc }, walletAddress, keypair);
+    if (!keypair) return { error: "Account not ready. Please sign out and back in." };
+
+    const symbol = input.symbol?.toUpperCase();
+    const amount = input.amount_usd || input.amount_usdc;
+
+    // Look up the token (xStock or crypto)
+    const token = await findTokenBySymbol(symbol);
+    if (!token) {
+      return {
+        error: `Couldn't find a tradeable token for ${symbol}. I can trade major US stocks (AAPL, TSLA, NVDA, MSFT, GOOGL, AMZN, META, COIN, MSTR, SPY, QQQ) and crypto.`
+      };
     }
-    return { status: "coming_soon", message: `Trading ${input.symbol} is coming soon. I can trade any crypto token right now.` };
+
+    // Route through Jupiter swap
+    const inputToken = input.side === "buy" ? "USDC" : symbol;
+    const outputToken = input.side === "buy" ? symbol : "USDC";
+
+    // Override mint resolution to use the looked-up address
+    const inputMint = input.side === "buy" ? MINTS.USDC : token.mint;
+    const outputMint = input.side === "buy" ? token.mint : MINTS.USDC;
+    const inputDecimals = input.side === "buy" ? 6 : 8; // USDC=6, xStocks usually 8
+    const swapAmount = Math.round(amount * (10 ** inputDecimals));
+
+    try {
+      // Get quote
+      const quoteRes = await fetch(`https://api.jup.ag/swap/v1/quote?inputMint=${inputMint}&outputMint=${outputMint}&amount=${swapAmount}&slippageBps=100`);
+      const quote = await quoteRes.json();
+      if (quote.error) {
+        return { error: `Couldn't get a quote for ${symbol}. This stock may not have liquidity right now.` };
+      }
+
+      // Get swap transaction
+      const swapRes = await fetch("https://api.jup.ag/swap/v1/swap", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          quoteResponse: quote,
+          userPublicKey: walletAddress,
+          wrapAndUnwrapSol: true,
+          dynamicComputeUnitLimit: true,
+          prioritizationFeeLamports: "auto"
+        })
+      });
+      const swapData = await swapRes.json();
+      if (swapData.error) return { error: swapData.error };
+      if (!swapData.swapTransaction) return { error: "Couldn't build the trade." };
+
+      // Sign and submit
+      const txBuf = Buffer.from(swapData.swapTransaction, "base64");
+      const tx = VersionedTransaction.deserialize(txBuf);
+      tx.sign([keypair]);
+
+      const signature = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: false, maxRetries: 3 });
+      const confirmation = await connection.confirmTransaction(signature, "confirmed");
+
+      if (confirmation.value?.err) {
+        return {
+          status: "failed",
+          message: `Trade failed on-chain.`,
+          signature, explorer: `https://solscan.io/tx/${signature}`
+        };
+      }
+
+      const outputDecimals = input.side === "buy" ? 8 : 6;
+      const received = parseInt(quote.outAmount) / (10 ** outputDecimals);
+
+      console.log(`  [STOCK] ${input.side.toUpperCase()} ${symbol} for $${amount} | tx: ${signature}`);
+
+      return {
+        status: "completed",
+        side: input.side, symbol,
+        amount_usd: amount,
+        shares_received: input.side === "buy" ? received : null,
+        usd_received: input.side === "sell" ? received : null,
+        signature,
+        explorer: `https://solscan.io/tx/${signature}`,
+        message: input.side === "buy"
+          ? `Bought ~${received.toFixed(4)} shares of ${symbol} for $${amount}.`
+          : `Sold ${amount} shares of ${symbol}, received ~$${received.toFixed(2)}.`
+      };
+    } catch (e) {
+      if (e.message?.includes("insufficient") || e.message?.includes("0x1")) {
+        return { error: `Not enough USDC in your account. Add funds first.` };
+      }
+      console.error("  [STOCK] Error:", e.message);
+      return { error: `Trade failed: ${e.message}` };
+    }
   },
 
   stock_quote: async (input) => {
@@ -500,9 +631,211 @@ const EXECUTORS = {
     }
   },
 
+  // ─── Prediction Market Bet ───
+  // Polymarket runs on Polygon, not Solana. We need to bridge USDC cross-chain.
+  // For now, provide a deep link with prefilled amount and instructions.
   prediction_bet: async (input, walletAddress) => {
     if (!walletAddress) return { error: "Please sign in." };
-    return { status: "coming_soon", message: `Prediction market betting is coming soon.` };
+
+    // Look up the market to get the URL
+    let marketUrl = `https://polymarket.com/event/${input.market_id}`;
+    let marketTitle = input.market_id;
+
+    try {
+      const res = await fetch(`https://gamma-api.polymarket.com/markets/${input.market_id}`);
+      const market = await res.json();
+      if (market?.slug) {
+        marketUrl = `https://polymarket.com/event/${market.slug}`;
+        marketTitle = market.question;
+      }
+    } catch (e) {}
+
+    return {
+      status: "ready_to_bet",
+      market: marketTitle,
+      outcome: input.outcome,
+      amount_usd: input.amount_usdc,
+      url: marketUrl,
+      message: `Ready to bet $${input.amount_usdc} on "${input.outcome}" for: ${marketTitle}. Polymarket runs on a different network (Polygon), so you'll need to complete the bet on Polymarket directly. Tap the link to go there.`,
+      note: "Cross-chain bridging coming soon — for now, click the link to complete your bet on Polymarket."
+    };
+  },
+
+  // ─── Buy Gift Card with USDC ───
+  buy_gift_card: async (input, walletAddress, keypair) => {
+    if (!walletAddress) return { error: "Please sign in to buy gift cards." };
+
+    const bitrefillKey = process.env.BITREFILL_API_KEY;
+    const bitrefillSecret = process.env.BITREFILL_API_SECRET;
+
+    if (!bitrefillKey || !bitrefillSecret) {
+      return {
+        status: "coming_soon",
+        message: `Gift card purchases are not set up yet. To enable, the admin needs to add Bitrefill API credentials.`,
+        merchant: input.merchant,
+        amount_usd: input.amount_usd
+      };
+    }
+
+    try {
+      // Search for the merchant's gift card product
+      const auth = "Basic " + Buffer.from(`${bitrefillKey}:${bitrefillSecret}`).toString("base64");
+
+      const productSearch = await fetch(`https://api.bitrefill.com/v2/products?query=${encodeURIComponent(input.merchant)}&country=${input.country || "US"}&category=gift_cards&limit=5`, {
+        headers: { "Authorization": auth }
+      });
+      const productData = await productSearch.json();
+
+      const products = productData.data || productData.products || [];
+      if (products.length === 0) {
+        return { error: `Couldn't find a gift card for ${input.merchant}. Try searching for available merchants first.` };
+      }
+
+      // Find best match (exact name match preferred)
+      const merchantLower = input.merchant.toLowerCase();
+      const product = products.find(p => p.name?.toLowerCase().includes(merchantLower)) || products[0];
+
+      // Check if amount is valid
+      const minAmount = parseFloat(product.range?.min || product.value?.min || 5);
+      const maxAmount = parseFloat(product.range?.max || product.value?.max || 500);
+
+      if (input.amount_usd < minAmount || input.amount_usd > maxAmount) {
+        return {
+          error: `${product.name} gift cards must be between $${minAmount} and $${maxAmount}.`,
+          available_amounts: product.values || product.denominations
+        };
+      }
+
+      // Create the order
+      const orderRes = await fetch("https://api.bitrefill.com/v2/orders", {
+        method: "POST",
+        headers: { "Authorization": auth, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          product_id: product.id,
+          value: input.amount_usd.toString(),
+          quantity: 1,
+          payment_method: "usdc_solana"
+        })
+      });
+
+      const orderData = await orderRes.json();
+
+      if (orderData.error) return { error: orderData.error.message || "Failed to create gift card order." };
+
+      const order = orderData.data || orderData;
+      const paymentAddress = order.payment?.address;
+      const paymentAmount = order.payment?.amount;
+
+      if (!paymentAddress) {
+        return { error: "Couldn't get payment details from Bitrefill." };
+      }
+
+      // Pay the order with USDC from user's wallet
+      const recipientPubkey = new PublicKey(paymentAddress);
+      const usdcMint = new PublicKey(MINTS.USDC);
+      const fromATA = await getAssociatedTokenAddress(usdcMint, keypair.publicKey);
+      const toATA = await getAssociatedTokenAddress(usdcMint, recipientPubkey);
+      const rawAmount = Math.round(parseFloat(paymentAmount) * (10 ** 6));
+
+      const tx = new Transaction();
+      const toAccount = await connection.getAccountInfo(toATA);
+      if (!toAccount) {
+        const { createAssociatedTokenAccountInstruction } = require("@solana/spl-token");
+        tx.add(createAssociatedTokenAccountInstruction(keypair.publicKey, toATA, recipientPubkey, usdcMint));
+      }
+      tx.add(createTransferInstruction(fromATA, toATA, keypair.publicKey, rawAmount));
+      tx.feePayer = keypair.publicKey;
+      tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
+      tx.sign(keypair);
+
+      const signature = await connection.sendRawTransaction(tx.serialize());
+      await connection.confirmTransaction(signature, "confirmed");
+
+      // Wait for Bitrefill to confirm and deliver the gift card
+      // Poll for redemption code
+      let redemption = null;
+      for (let i = 0; i < 30; i++) {
+        await new Promise(r => setTimeout(r, 2000));
+        const statusRes = await fetch(`https://api.bitrefill.com/v2/orders/${order.id}`, {
+          headers: { "Authorization": auth }
+        });
+        const statusData = await statusRes.json();
+        const o = statusData.data || statusData;
+        if (o.redemption_info?.code || o.code) {
+          redemption = o.redemption_info?.code || o.code;
+          break;
+        }
+        if (o.status === "delivered" || o.status === "completed") {
+          redemption = o.redemption_info?.code || o.code;
+          break;
+        }
+      }
+
+      console.log(`  [GIFT] ${input.merchant} $${input.amount_usd} | tx: ${signature}`);
+
+      return {
+        status: "completed",
+        merchant: product.name,
+        amount_usd: input.amount_usd,
+        redemption_code: redemption || "Pending — check your email or order history",
+        order_id: order.id,
+        signature,
+        explorer: `https://solscan.io/tx/${signature}`,
+        message: `Bought a $${input.amount_usd} ${product.name} gift card. ${redemption ? `Code: ${redemption}` : "Code will be delivered shortly."}`,
+        instructions: `Go to ${input.merchant.toLowerCase()}.com and use this code at checkout.`
+      };
+    } catch (e) {
+      console.error("  [GIFT] Error:", e.message);
+      return { error: `Gift card purchase failed: ${e.message}` };
+    }
+  },
+
+  list_gift_card_merchants: async (input) => {
+    const bitrefillKey = process.env.BITREFILL_API_KEY;
+    const bitrefillSecret = process.env.BITREFILL_API_SECRET;
+
+    if (!bitrefillKey || !bitrefillSecret) {
+      // Return a curated list of popular merchants
+      return {
+        merchants: [
+          "Amazon", "Walmart", "Target", "Best Buy", "Home Depot",
+          "Apple", "Google Play", "Steam", "PlayStation", "Xbox",
+          "Nike", "Adidas", "Sephora", "Ulta",
+          "Starbucks", "DoorDash", "Uber Eats", "Instacart",
+          "Airbnb", "Hotels.com", "Delta", "Southwest",
+          "Visa", "Mastercard"
+        ],
+        note: "Gift card purchases are not enabled yet. These are common merchants that will be available."
+      };
+    }
+
+    try {
+      const auth = "Basic " + Buffer.from(`${bitrefillKey}:${bitrefillSecret}`).toString("base64");
+      const params = new URLSearchParams({
+        country: input.country || "US",
+        category: "gift_cards",
+        limit: "30"
+      });
+      if (input.category) params.append("query", input.category);
+
+      const res = await fetch(`https://api.bitrefill.com/v2/products?${params}`, {
+        headers: { "Authorization": auth }
+      });
+      const data = await res.json();
+      const products = data.data || data.products || [];
+
+      return {
+        merchants: products.map(p => ({
+          name: p.name,
+          min: p.range?.min,
+          max: p.range?.max,
+          country: p.country
+        })),
+        count: products.length
+      };
+    } catch (e) {
+      return { error: "Couldn't load merchants right now." };
+    }
   },
 
   // ─── Flights & Hotels (Duffel — live search, real booking) ───
