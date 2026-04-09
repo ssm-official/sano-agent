@@ -305,7 +305,10 @@ IMPORTANT:
 - Use tools for real data. Never make up prices or results
 - The user's account address is provided — pass it to balance/payment/swap tools automatically
 - If the user asks to buy a product, search for it first, show options, then confirm before purchase
-- If the user asks about something you can't do yet, be honest but brief: "I can't do that yet, but I can help you with X instead"`;
+- If the user asks about something you can't do yet, be honest but brief: "I can't do that yet, but I can help you with X instead"
+- When a swap or payment completes successfully, always show the explorer link so they can verify
+- After a successful transaction, mention the new balance or suggest checking it
+- You are a REAL agent that executes transactions. Swaps and payments happen for real on the Solana blockchain. Treat them seriously — always confirm amounts with the user before executing`;
 
 app.post("/api/chat", async (req, res) => {
   const { message, sessionId, walletAddress } = req.body;
@@ -381,7 +384,19 @@ app.post("/api/chat", async (req, res) => {
           }
         } else if (event.type === "content_block_stop" && currentToolUse) {
           const toolInput = toolInputJson ? JSON.parse(toolInputJson) : {};
-          const toolResult = await executeTool(currentToolUse.name, toolInput, walletAddress);
+          // Look up user's keypair for signing transactions
+          let userKeypair = null;
+          if (walletAddress) {
+            for (const [, u] of users) {
+              if (u.wallet === walletAddress && u.walletSecret) {
+                try {
+                  userKeypair = Keypair.fromSecretKey(bs58.decode(u.walletSecret));
+                } catch (e) { console.log("  [WARN] Could not load keypair:", e.message); }
+                break;
+              }
+            }
+          }
+          const toolResult = await executeTool(currentToolUse.name, toolInput, walletAddress, userKeypair);
 
           res.write(`data: ${JSON.stringify({
             type: "tool_result", tool: currentToolUse.name, input: toolInput, result: toolResult
