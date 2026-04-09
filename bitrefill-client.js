@@ -14,8 +14,10 @@ function runCli(args, timeoutMs = 60000) {
       return reject(new Error("BITREFILL_API_KEY not set"));
     }
 
-    const proc = spawn(BITREFILL_BIN, ["--json", ...args], {
-      env: { ...process.env, BITREFILL_API_KEY: apiKey },
+    // CLI v0.1.1 doesn't have --json. Output is already JSON by default.
+    // Use --api-key to bypass OAuth. Globals must come BEFORE the subcommand.
+    const proc = spawn(BITREFILL_BIN, ["--api-key", apiKey, ...args], {
+      env: { ...process.env, BITREFILL_API_KEY: apiKey, CI: "true" },
       shell: false
     });
 
@@ -33,17 +35,22 @@ function runCli(args, timeoutMs = 60000) {
     proc.on("close", code => {
       clearTimeout(timer);
       if (code !== 0) {
+        const errMsg = (stderr || stdout).trim() || `bitrefill exited with code ${code}`;
         try {
           const errJson = JSON.parse(stderr);
-          return reject(new Error(errJson.error || stderr));
+          return reject(new Error(errJson.error || errJson.message || errMsg));
         } catch {
-          return reject(new Error(stderr || `bitrefill exited with code ${code}`));
+          return reject(new Error(errMsg));
         }
       }
+      // Output is pretty-printed JSON. Strip any non-JSON prelude (auth messages etc.)
+      let trimmed = stdout.trim();
+      // Find the first { or [ — that's where JSON starts
+      const jsonStart = trimmed.search(/[\[\{]/);
+      if (jsonStart > 0) trimmed = trimmed.slice(jsonStart);
       try {
-        resolve(JSON.parse(stdout));
+        resolve(JSON.parse(trimmed));
       } catch (e) {
-        // Sometimes output isn't JSON — return as string
         resolve({ raw: stdout });
       }
     });
