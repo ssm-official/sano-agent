@@ -406,31 +406,90 @@ const EXECUTORS = {
       programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
     });
 
-    const tokens = [];
+    // Collect all non-zero token holdings
+    const rawHoldings = [];
     for (const { account } of tokenAccounts.value) {
       const info = account.data.parsed?.info;
       if (!info) continue;
       const amount = parseFloat(info.tokenAmount?.uiAmountString || "0");
       if (amount === 0) continue;
-      const mint = info.mint;
-      const symbol = Object.entries(MINTS).find(([, m]) => m === mint)?.[0] || mint.slice(0, 6) + "...";
-      tokens.push({ token: symbol, balance: amount });
+      rawHoldings.push({ mint: info.mint, balance: amount });
     }
 
-    let solPrice = 0, totalUsd = 0;
+    // Identify each token: known crypto, known xStock, or look up via Jupiter
+    const knownXStocks = Object.entries(XSTOCKS).reduce((acc, [sym, mint]) => { acc[mint] = sym; return acc; }, {});
+    const knownCrypto = Object.entries(MINTS).reduce((acc, [sym, mint]) => { acc[mint] = sym; return acc; }, {});
+    const unknownMints = [];
+
+    const tokens = rawHoldings.map(h => {
+      const xStock = knownXStocks[h.mint];
+      if (xStock) return { token: xStock, mint: h.mint, balance: h.balance, type: "stock" };
+      const crypto = knownCrypto[h.mint];
+      if (crypto) return { token: crypto, mint: h.mint, balance: h.balance, type: "crypto" };
+      unknownMints.push(h.mint);
+      return { token: null, mint: h.mint, balance: h.balance, type: "unknown" };
+    });
+
+    // Look up unknown tokens via Jupiter token list (one batch call)
+    if (unknownMints.length > 0) {
+      try {
+        const lookupUrl = `https://api.jup.ag/tokens/v1/mints/${unknownMints.join(",")}`;
+        const lookupRes = await fetch(lookupUrl);
+        if (lookupRes.ok) {
+          const lookupData = await lookupRes.json();
+          const tokenList = Array.isArray(lookupData) ? lookupData : lookupData.tokens || [];
+          for (const t of tokens) {
+            if (t.token) continue;
+            const info = tokenList.find(x => x.address === t.mint);
+            if (info) {
+              t.token = info.symbol;
+              t.name = info.name;
+              t.type = "token";
+            } else {
+              t.token = t.mint.slice(0, 6) + "...";
+            }
+          }
+        }
+      } catch (e) {}
+    }
+
+    // Get prices for all tokens (batch)
+    const allMints = [MINTS.SOL, ...rawHoldings.map(h => h.mint)];
+    let solPrice = 0;
+    const prices = {};
     try {
-      const priceRes = await fetch(`https://api.jup.ag/price/v2?ids=${MINTS.SOL}`);
+      const priceRes = await fetch(`https://api.jup.ag/price/v2?ids=${allMints.join(",")}`);
       const priceData = await priceRes.json();
-      solPrice = parseFloat(priceData.data?.[MINTS.SOL]?.price || 0);
-      totalUsd = solAmount * solPrice;
-      for (const t of tokens) {
-        if (t.token === "USDC" || t.token === "USDT") { totalUsd += t.balance; t.value_usd = t.balance; }
+      for (const mint of allMints) {
+        const p = parseFloat(priceData.data?.[mint]?.price || 0);
+        if (p > 0) prices[mint] = p;
       }
+      solPrice = prices[MINTS.SOL] || 0;
     } catch (e) {}
 
+    // Compute USD values
+    let totalUsd = solAmount * solPrice;
+    for (const t of tokens) {
+      const price = prices[t.mint] || 0;
+      t.price_usd = price;
+      t.value_usd = parseFloat((t.balance * price).toFixed(2));
+      totalUsd += t.value_usd;
+    }
+
+    // Sort tokens by value descending
+    tokens.sort((a, b) => (b.value_usd || 0) - (a.value_usd || 0));
+
+    // Separate stock holdings from cash holdings for clarity
+    const stockHoldings = tokens.filter(t => t.type === "stock");
+    const cryptoHoldings = tokens.filter(t => t.type !== "stock");
+
     return {
-      sol_balance: solAmount, sol_value_usd: parseFloat((solAmount * solPrice).toFixed(2)),
-      tokens, total_usd: parseFloat(totalUsd.toFixed(2)), source: "live"
+      sol_balance: solAmount,
+      sol_value_usd: parseFloat((solAmount * solPrice).toFixed(2)),
+      cash_holdings: cryptoHoldings.map(t => ({ token: t.token, balance: t.balance, value_usd: t.value_usd })),
+      stock_holdings: stockHoldings.map(t => ({ ticker: t.token, shares: t.balance, value_usd: t.value_usd })),
+      total_usd: parseFloat(totalUsd.toFixed(2)),
+      source: "live"
     };
   },
 
