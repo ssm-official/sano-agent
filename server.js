@@ -388,7 +388,27 @@ IMPORTANT:
 - If the user asks about something you can't do yet, be honest but brief: "I can't do that yet, but I can help you with X instead"
 - When a swap or payment completes successfully, always show the explorer link so they can verify
 - After a successful transaction, mention the new balance or suggest checking it
-- You are a REAL agent that executes transactions. Swaps and payments happen for real on the Solana blockchain. Treat them seriously — always confirm amounts with the user before executing`;
+- You are a REAL agent that executes transactions. Swaps and payments happen for real on the Solana blockchain. Treat them seriously — always confirm amounts with the user before executing
+
+COMPUTER USE — YOU HAVE A REAL COMPUTER:
+You have access to a real Linux desktop with a browser via the "computer" tool. You can take screenshots, click, type, scroll — anything a human can do on a computer. Use this to:
+- Browse any website (Tokopedia, Shopee, Amazon, eBay, anywhere)
+- Search for products on sites that don't have API integrations
+- Check forms, fill out checkout pages, navigate complex sites
+- Verify information by visiting the source
+
+How to use it:
+1. To open a website, take a screenshot first to see what's on screen
+2. If a browser isn't open, type the URL into the browser address bar (or use the computer tool to navigate)
+3. Take screenshots between actions to see the current state
+4. Click on links and buttons by their visible coordinates
+5. Type into fields after clicking on them first
+
+When the user asks for something that needs the web (e.g. "search Tokopedia for X", "what's on this website", "fill out this form"), use computer actions instead of telling them you can't.
+
+For purchases on sites without gift card support: browse the site, find the product, but ALWAYS confirm with the user before completing any checkout. Save shipping info to memory so you don't have to ask twice.
+
+Resolution: 1280x800. Browser: Firefox.`;
 
 app.post("/api/chat", async (req, res) => {
   const { message, sessionId, walletAddress, userEmail: clientEmail } = req.body;
@@ -486,7 +506,17 @@ When you learn something new about the user that would be useful to remember (th
     let fullResponse = "";
     let toolResults = [];
     let loopCount = 0;
-    const MAX_LOOPS = 5; // Prevent runaway tool loops
+    // Computer use needs many more turns (each click+screenshot is one)
+    const MAX_LOOPS = userRecord?.sandbox_id ? 30 : 5;
+
+    // If user has a sandbox, give the agent computer use capability
+    const computerTool = userRecord?.sandbox_id ? [{
+      type: "computer_20250124",
+      name: "computer",
+      display_width_px: 1280,
+      display_height_px: 800,
+      display_number: 0
+    }] : [];
 
     while (loopCount < MAX_LOOPS) {
       loopCount++;
@@ -495,8 +525,9 @@ When you learn something new about the user that would be useful to remember (th
         model: "claude-sonnet-4-20250514",
         max_tokens: 4096,
         system: systemPrompt,
-        tools: TOOLS,
-        messages
+        tools: [...TOOLS, ...computerTool],
+        messages,
+        ...(computerTool.length > 0 ? { betas: ["computer-use-2025-01-24"] } : {})
       });
 
       let currentToolUse = null;
@@ -520,6 +551,99 @@ When you learn something new about the user that would be useful to remember (th
         } else if (event.type === "content_block_stop" && currentToolUse) {
           const toolInput = toolInputJson ? JSON.parse(toolInputJson) : {};
 
+          // ─── COMPUTER USE: handle the native Anthropic computer tool ───
+          if (currentToolUse.name === "computer" && userRecord?.sandbox_id) {
+            const sbxId = userRecord.sandbox_id;
+            const action = toolInput.action;
+            const coord = toolInput.coordinate;
+            const text = toolInput.text;
+            let resultBlock;
+
+            try {
+              switch (action) {
+                case "screenshot":
+                  break; // just take one
+                case "left_click":
+                  await sandbox.leftClick(sbxId, coord?.[0], coord?.[1]);
+                  break;
+                case "right_click":
+                  await sandbox.rightClick(sbxId, coord?.[0], coord?.[1]);
+                  break;
+                case "double_click":
+                  await sandbox.doubleClick(sbxId, coord?.[0], coord?.[1]);
+                  break;
+                case "mouse_move":
+                  await sandbox.moveMouse(sbxId, coord?.[0], coord?.[1]);
+                  break;
+                case "type":
+                  await sandbox.typeText(sbxId, text);
+                  break;
+                case "key":
+                  // Anthropic sends keys like "Return", "ctrl+a"
+                  const k = text.includes("+") ? text.split("+") : text.toLowerCase().replace("return", "enter");
+                  await sandbox.pressKey(sbxId, k);
+                  break;
+                case "scroll":
+                  const dir = toolInput.scroll_direction || "down";
+                  const amt = toolInput.scroll_amount || 3;
+                  if (coord) await sandbox.moveMouse(sbxId, coord[0], coord[1]);
+                  await sandbox.scroll(sbxId, dir, amt);
+                  break;
+                case "wait":
+                  await new Promise(r => setTimeout(r, (toolInput.duration || 1) * 1000));
+                  break;
+                case "cursor_position":
+                  // No direct equivalent, just return screenshot
+                  break;
+                default:
+                  console.log(`  [COMPUTER] Unknown action: ${action}`);
+              }
+
+              // Take a screenshot to send back
+              await new Promise(r => setTimeout(r, 300)); // small wait for UI updates
+              const screenshotB64 = await sandbox.takeScreenshot(sbxId);
+
+              // Tell client what action happened
+              res.write(`data: ${JSON.stringify({
+                type: "tool_result",
+                tool: "computer",
+                input: toolInput,
+                result: { action, ok: true }
+              })}\n\n`);
+
+              // Build the tool_result block for Anthropic with the screenshot as image
+              resultBlock = {
+                type: "tool_result",
+                tool_use_id: currentToolUse.id,
+                content: [{
+                  type: "image",
+                  source: {
+                    type: "base64",
+                    media_type: "image/png",
+                    data: screenshotB64
+                  }
+                }]
+              };
+            } catch (e) {
+              console.error(`  [COMPUTER] Action ${action} failed:`, e.message);
+              resultBlock = {
+                type: "tool_result",
+                tool_use_id: currentToolUse.id,
+                content: `Error: ${e.message}`,
+                is_error: true
+              };
+              res.write(`data: ${JSON.stringify({
+                type: "tool_result", tool: "computer", input: toolInput, result: { error: e.message }
+              })}\n\n`);
+            }
+
+            toolResults.push(resultBlock);
+            currentToolUse = null;
+            toolInputJson = "";
+            continue;
+          }
+
+          // ─── REGULAR TOOLS ───
           // Load user's keypair from THEIR sandbox (not from the server)
           let userKeypair = null;
           if (userRecord?.sandbox_id) {
@@ -530,7 +654,6 @@ When you learn something new about the user that would be useful to remember (th
             }
           }
 
-          // Pass user context — sandbox_id lets tools read/write memory in user's own env
           const toolResult = await executeTool(
             currentToolUse.name,
             toolInput,
