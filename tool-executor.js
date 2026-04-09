@@ -93,6 +93,31 @@ async function findTokenBySymbol(symbol) {
   return null;
 }
 
+// Minimum SOL needed in a wallet to do any on-chain action
+// (covers gas fees + ATA rent for new tokens)
+const MIN_SOL_FOR_OPS = 0.005; // ~$0.50 worth
+
+// Check if user has enough SOL for fees. Returns null if OK, or an error result if not.
+async function checkSolBalance(walletAddress) {
+  if (!walletAddress) return null;
+  try {
+    const balance = await connection.getBalance(new PublicKey(walletAddress));
+    const sol = balance / LAMPORTS_PER_SOL;
+    if (sol < MIN_SOL_FOR_OPS) {
+      return {
+        error: `Your account needs a small amount of SOL (about $0.50 worth) to pay network fees. Send any amount of SOL to your address and try again. Your address: ${walletAddress}`,
+        needs_sol: true,
+        current_sol: sol,
+        min_sol: MIN_SOL_FOR_OPS,
+        wallet: walletAddress
+      };
+    }
+  } catch (e) {
+    console.log("[SOL CHECK] Error:", e.message);
+  }
+  return null;
+}
+
 // ─── Main executor — receives keypair for signing + context (userEmail, store) ───
 async function executeTool(name, input, walletAddress, keypair, context = {}) {
   try {
@@ -162,6 +187,9 @@ const EXECUTORS = {
   jupiter_swap: async (input, walletAddress, keypair) => {
     if (!walletAddress) return { error: "Please sign in first." };
     if (!keypair) return { error: "Account not ready. Please sign out and back in." };
+
+    const solCheck = await checkSolBalance(walletAddress);
+    if (solCheck) return solCheck;
 
     const inputMint = resolveMint(input.input_token);
     const outputMint = resolveMint(input.output_token);
@@ -245,6 +273,9 @@ const EXECUTORS = {
   send_payment: async (input, walletAddress, keypair) => {
     if (!walletAddress) return { error: "Please sign in to send money." };
     if (!keypair) return { error: "Account not ready. Please sign out and back in." };
+
+    const solCheck = await checkSolBalance(walletAddress);
+    if (solCheck) return solCheck;
 
     let recipient = input.recipient;
 
@@ -485,6 +516,9 @@ const EXECUTORS = {
     if (!walletAddress) return { error: "Please sign in to trade." };
     if (!keypair) return { error: "Account not ready. Please sign out and back in." };
 
+    const solCheck = await checkSolBalance(walletAddress);
+    if (solCheck) return solCheck;
+
     const symbol = input.symbol?.toUpperCase();
     const amount = input.amount_usd || input.amount_usdc;
 
@@ -650,6 +684,9 @@ const EXECUTORS = {
     if (!process.env.BITREFILL_API_KEY) {
       return { error: "Shopping is not configured yet. Coming soon." };
     }
+
+    const solCheck = await checkSolBalance(walletAddress);
+    if (solCheck) return solCheck;
 
     try {
       // 1. Search for the merchant on Bitrefill
