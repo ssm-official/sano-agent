@@ -25,8 +25,9 @@ async function createUserSandbox(email) {
   }
 
   console.log(`  [SBX] Creating desktop sandbox for ${email}...`);
+  // Use the maximum allowed timeout (1 hour) so sandbox stays alive longer
   const sbx = await Sandbox.create({
-    timeoutMs: 10 * 60 * 1000,
+    timeoutMs: 60 * 60 * 1000,  // 1 hour max running time
     resolution: [1280, 800],
     dpi: 96
   });
@@ -41,20 +42,20 @@ async function createUserSandbox(email) {
     created: new Date().toISOString()
   };
 
-  // Write essential files in parallel
   await Promise.all([
     sbx.files.write(PATHS.wallet, JSON.stringify(walletData, null, 2)),
     sbx.files.write(PATHS.memory, `# Memory for ${email}\n\n## Profile\n- email: ${email}\n- account created: ${new Date().toISOString()}\n\n## Notes\n`),
     sbx.files.write(PATHS.state, JSON.stringify({ created: new Date().toISOString() }))
   ]);
 
-  // Cache the live sandbox so subsequent requests don't need to reconnect
-  liveSandboxes.set(sandboxId, { sbx, lastUsed: Date.now() });
-
-  console.log(`  [SBX] Initialized ${sandboxId}`);
-
-  // NOTE: We don't pause or start streaming here. The cleanup timer will pause
-  // it after idle. Streaming starts lazily on first computer use action.
+  // Pause immediately so it persists across server restarts.
+  // Paused sandboxes are kept indefinitely by E2B.
+  try {
+    await sbx.pause();
+    console.log(`  [SBX] Paused ${sandboxId}`);
+  } catch (e) {
+    console.log(`  [SBX] Pause warning:`, e.message);
+  }
 
   return {
     sandboxId,
@@ -72,6 +73,21 @@ async function getSandbox(sandboxId) {
   const sbx = await Sandbox.connect(sandboxId);
   liveSandboxes.set(sandboxId, { sbx, lastUsed: Date.now() });
   return sbx;
+}
+
+// Check if a sandbox still exists and is reachable
+async function isSandboxAlive(sandboxId) {
+  if (!sandboxId) return false;
+  try {
+    const cached = liveSandboxes.get(sandboxId);
+    if (cached) return true;
+    // Try a quick reconnect
+    const sbx = await Sandbox.connect(sandboxId);
+    liveSandboxes.set(sandboxId, { sbx, lastUsed: Date.now() });
+    return true;
+  } catch (e) {
+    return false;
+  }
 }
 
 // ─── Wallet ops ───
@@ -240,7 +256,7 @@ setInterval(async () => {
 }, 30 * 1000);
 
 module.exports = {
-  createUserSandbox, getSandbox,
+  createUserSandbox, getSandbox, isSandboxAlive,
   getWallet, getKeypair, getWalletAddress,
   readMemory, writeMemory, appendToMemory, removeFromMemory,
   readState, writeState,

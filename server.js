@@ -501,7 +501,33 @@ app.post("/api/chat", async (req, res) => {
   }
 
   // Inject the user's memory (now from their isolated sandbox)
-  const userRecord = userEmail ? users.get(userEmail) : null;
+  let userRecord = userEmail ? users.get(userEmail) : null;
+
+  // Check if the user's sandbox is still alive — if not, recreate it
+  if (userRecord?.sandbox_id) {
+    const alive = await sandbox.isSandboxAlive(userRecord.sandbox_id);
+    if (!alive) {
+      console.log(`  [SBX] Sandbox ${userRecord.sandbox_id} not found, recreating for ${userEmail}`);
+      try {
+        // Save existing memory if we have it cached anywhere
+        const oldMemory = store.loadMemory(userEmail) || "";
+        const sbxResult = await sandbox.createUserSandbox(userEmail);
+        userRecord.sandbox_id = sbxResult.sandboxId;
+        userRecord.wallet = sbxResult.wallet;
+        userRecord.recovered_at = new Date().toISOString();
+        users.set(userEmail, userRecord);
+        store.saveUsers(users);
+        if (oldMemory) {
+          try { await sandbox.writeMemory(sbxResult.sandboxId, oldMemory); } catch (e) {}
+        }
+        console.log(`  [SBX] Recovered ${userEmail} -> ${sbxResult.sandboxId}`);
+      } catch (e) {
+        console.error(`  [SBX] Recovery failed for ${userEmail}:`, e.message);
+        userRecord.sandbox_id = null;
+      }
+    }
+  }
+
   if (userRecord?.sandbox_id) {
     try {
       const memory = await sandbox.readMemory(userRecord.sandbox_id);
