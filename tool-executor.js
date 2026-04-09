@@ -803,46 +803,18 @@ const EXECUTORS = {
     }
   },
 
-  // ─── MEMORY: Remember and forget (writes to user's isolated sandbox) ───
+  // ─── MEMORY: Remember and forget (server file storage) ───
   remember: async (input, walletAddress, keypair, context) => {
-    if (!context?.userEmail) return { error: "Sign in first." };
+    if (!context?.userEmail || !context?.store) return { error: "Sign in first." };
     const section = input.section || "Notes";
-
-    // Prefer sandbox storage (isolated per user)
-    if (context.sandboxId && context.sandbox) {
-      try {
-        await context.sandbox.appendToMemory(context.sandboxId, input.fact, section);
-        return { status: "saved", fact: input.fact, section, message: `Got it. I'll remember that.` };
-      } catch (e) {
-        console.log("  [MEM] Sandbox write failed, falling back:", e.message);
-      }
-    }
-
-    // Fallback to legacy file storage
-    if (context.store) {
-      context.store.rememberFact(context.userEmail, input.fact, section);
-      return { status: "saved", fact: input.fact, section, message: `Got it. I'll remember that.` };
-    }
-
-    return { error: "Memory not available right now." };
+    context.store.rememberFact(context.userEmail, input.fact, section);
+    return { status: "saved", fact: input.fact, section, message: `Got it. I'll remember that.` };
   },
 
   forget: async (input, walletAddress, keypair, context) => {
-    if (!context?.userEmail) return { error: "Sign in first." };
-
-    if (context.sandboxId && context.sandbox) {
-      try {
-        await context.sandbox.removeFromMemory(context.sandboxId, input.query);
-        return { status: "forgotten", query: input.query, message: `Removed entries matching "${input.query}".` };
-      } catch (e) { /* fall through */ }
-    }
-
-    if (context.store) {
-      context.store.forgetFact(context.userEmail, input.query);
-      return { status: "forgotten", query: input.query, message: `Removed entries matching "${input.query}".` };
-    }
-
-    return { error: "Memory not available." };
+    if (!context?.userEmail || !context?.store) return { error: "Sign in first." };
+    context.store.forgetFact(context.userEmail, input.query);
+    return { status: "forgotten", query: input.query, message: `Removed entries matching "${input.query}".` };
   },
 
   // ─── DeFi (Savings/Interest) ───

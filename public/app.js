@@ -110,6 +110,11 @@ async function verifyCode() {
     }));
 
     enterApp();
+
+    // First-time signin: force the user to back up their private key
+    if (data.first_signin) {
+      setTimeout(() => $("#backup-key-btn")?.click(), 500);
+    }
   } catch (e) {
     showAuthError("Verification failed. Try again.");
   } finally {

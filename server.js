@@ -12,6 +12,7 @@ const { Connection, PublicKey, LAMPORTS_PER_SOL, Keypair } = require("@solana/we
 const bs58 = require("bs58").default || require("bs58");
 const store = require("./agent-store");
 const sandbox = require("./sandbox-manager");
+const vault = require("./wallet-vault");
 
 const app = express();
 app.set("trust proxy", 1); // Trust Railway's reverse proxy
@@ -193,47 +194,42 @@ app.post("/api/auth/verify", async (req, res) => {
 
   // Get or create user
   let user = users.get(key);
-  if (!user) {
-    // Brand new user — spin up their own sandbox with an isolated wallet
-    try {
-      const sbxResult = await sandbox.createUserSandbox(key);
-      user = {
-        email: key,
-        wallet: sbxResult.wallet,
-        sandbox_id: sbxResult.sandboxId,
-        created: new Date().toISOString(),
-        agent_name: "SANO"
-      };
-      users.set(key, user);
-      store.saveUsers(users);
-      console.log(`  [USER] New user: ${key} -> sandbox ${user.sandbox_id} -> wallet ${user.wallet}`);
-    } catch (e) {
-      console.error(`  [USER] Failed to create sandbox for ${key}:`, e.message);
-      return res.json({ error: "Couldn't set up your account. Try again in a moment." });
-    }
-  } else if (!user.sandbox_id) {
-    // Existing user from before sandboxes — migrate them now
-    try {
-      console.log(`  [MIGRATE] Upgrading ${key} to sandbox-backed account`);
-      const sbxResult = await sandbox.createUserSandbox(key);
-      user.sandbox_id = sbxResult.sandboxId;
-      user.wallet = sbxResult.wallet; // new wallet
-      user.walletSecret = null;       // no longer stored on server
-      user.migrated_at = new Date().toISOString();
-      users.set(key, user);
-      store.saveUsers(users);
+  let firstSignin = false;
 
-      // Copy any existing memory from legacy storage into the sandbox
-      const legacyMemory = store.loadMemory(key);
-      if (legacyMemory) {
-        try { await sandbox.writeMemory(user.sandbox_id, legacyMemory); } catch (e) {}
-      }
-      console.log(`  [MIGRATE] ${key} -> sandbox ${user.sandbox_id} -> wallet ${user.wallet}`);
-    } catch (e) {
-      console.error(`  [MIGRATE] Failed for ${key}:`, e.message);
-      // Don't block login — they can use legacy mode
-    }
+  if (!user) {
+    // Brand new user
+    user = {
+      email: key,
+      created: new Date().toISOString(),
+      agent_name: "SANO"
+    };
+    firstSignin = true;
   }
+
+  // Make sure they have a wallet in the vault
+  if (!vault.hasWallet(key)) {
+    const { publicKey } = vault.createWallet(key);
+    user.wallet = publicKey;
+    firstSignin = true;
+    console.log(`  [VAULT] Created wallet for ${key} -> ${publicKey}`);
+  } else if (!user.wallet) {
+    user.wallet = vault.getPublicKey(key);
+  }
+
+  // Initialize memory if missing
+  if (!store.loadMemory(key)) {
+    store.saveMemory(key, `# Memory for ${key}\n\n## Profile\n- email: ${key}\n- account created: ${user.created}\n\n## Notes\n`);
+  }
+
+  // Sandbox creation is OPTIONAL and lazy.
+  // We do NOT create a sandbox during signin anymore — that was slow and risky.
+  // The chat handler will create one on first computer-use request, lazily.
+  // If they have an old sandbox_id from legacy code, we'll keep it for now and
+  // the chat handler will check liveness.
+
+  users.set(key, user);
+  store.saveUsers(users);
+  console.log(`  [USER] ${firstSignin ? "Created" : "Logged in"}: ${key} -> ${user.wallet}`);
 
   // Create auth token
   const token = crypto.randomBytes(32).toString("hex");
@@ -242,7 +238,8 @@ app.post("/api/auth/verify", async (req, res) => {
     ok: true,
     email: key,
     wallet: user.wallet,
-    token
+    token,
+    first_signin: firstSignin
   });
 });
 
@@ -261,39 +258,17 @@ app.get("/", (req, res) => {
 app.use(express.static("public", { index: false }));
 
 // ─── Export Private Key (for self-custody backup) ───
-// SECURITY: This endpoint returns the user's secret key from their sandbox.
-// In production: require step-up auth (re-confirm OTP) before exposing the key.
 app.post("/api/wallet/export", async (req, res) => {
   try {
     const { email } = req.body;
     if (!email) return res.json({ error: "Email required" });
-    const user = users.get(email.toLowerCase());
-    if (!user) return res.json({ error: "User not found" });
-
-    // Read from sandbox if available
-    if (user.sandbox_id) {
-      try {
-        const wallet = await sandbox.getWallet(user.sandbox_id);
-        return res.json({
-          wallet: wallet.public_key,
-          private_key: wallet.secret_key,
-          warning: "Anyone with this key controls your account. Save it somewhere safe and never share it."
-        });
-      } catch (e) {
-        return res.json({ error: "Could not read wallet from sandbox: " + e.message });
-      }
-    }
-
-    // Legacy fallback
-    if (user.walletSecret) {
-      return res.json({
-        wallet: user.wallet,
-        private_key: user.walletSecret,
-        warning: "Anyone with this key controls your account. Save it somewhere safe and never share it."
-      });
-    }
-
-    res.json({ error: "Secret key unavailable for this wallet" });
+    const exported = vault.exportSecret(email.toLowerCase());
+    if (!exported) return res.json({ error: "Wallet not found" });
+    res.json({
+      wallet: exported.public_key,
+      private_key: exported.secret_key,
+      warning: "Anyone with this key controls your account. Save it somewhere safe and never share it."
+    });
   } catch (e) {
     res.json({ error: e.message });
   }
@@ -479,16 +454,6 @@ app.post("/api/chat", async (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
 
-  // If the user's sandbox is dead, fail loud instead of silently creating a new one
-  if (sandboxDead && userRecord?.sandbox_id) {
-    res.write(`data: ${JSON.stringify({
-      type: "text",
-      content: `Your agent's sandbox is missing. Your wallet at ${userRecord.wallet} still exists on-chain but the secret key is locked. To start fresh with a NEW wallet (this will NOT recover your old funds), tap the "Reset agent" button in settings — but make sure you've moved any funds from the old wallet first if you can.`
-    })}\n\n`);
-    res.write(`data: ${JSON.stringify({ type: "done", sessionId: sid })}\n\n`);
-    return res.end();
-  }
-
   const now = new Date();
   const days = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
   const todayStr = now.toISOString().split("T")[0]; // YYYY-MM-DD
@@ -510,25 +475,12 @@ app.post("/api/chat", async (req, res) => {
     systemPrompt += `\nUser's account address: ${walletAddress}`;
   }
 
-  // Inject the user's memory (now from their isolated sandbox)
+  // Inject the user's memory from server file storage
   let userRecord = userEmail ? users.get(userEmail) : null;
-
-  // SAFETY: Check if the user's sandbox is still alive but DO NOT auto-recreate.
-  // Auto-creating a new sandbox would orphan any funds at the old wallet address.
-  let sandboxDead = false;
-  if (userRecord?.sandbox_id) {
-    const alive = await sandbox.isSandboxAlive(userRecord.sandbox_id);
-    if (!alive) {
-      sandboxDead = true;
-      console.warn(`  [SBX] Sandbox ${userRecord.sandbox_id} is missing for ${userEmail} — NOT recreating to preserve wallet ${userRecord.wallet}`);
-    }
-  }
-
-  if (userRecord?.sandbox_id && !sandboxDead) {
-    try {
-      const memory = await sandbox.readMemory(userRecord.sandbox_id);
-      if (memory) {
-        systemPrompt += `\n\n=== YOUR MEMORY ABOUT THIS USER ===
+  if (userEmail) {
+    const memory = store.loadMemory(userEmail);
+    if (memory) {
+      systemPrompt += `\n\n=== YOUR MEMORY ABOUT THIS USER ===
 This is what you remember about them from previous conversations. Use it to personalize your responses, skip questions you already know the answer to, and refer to past activity when relevant.
 
 ${memory}
@@ -536,15 +488,6 @@ ${memory}
 === END MEMORY ===
 
 When you learn something new about the user that would be useful to remember (their name, address, preferences, sizes, important dates, recurring needs), call the remember tool to save it. When something becomes outdated, use forget. Keep memory clean and useful.`;
-      }
-    } catch (e) {
-      console.log(`  [SBX] Could not read memory for ${userEmail}:`, e.message);
-    }
-  } else if (userEmail) {
-    // Legacy fallback for old users without sandbox
-    const memory = store.loadMemory(userEmail);
-    if (memory) {
-      systemPrompt += `\n\n=== YOUR MEMORY ABOUT THIS USER ===\n${memory}\n=== END MEMORY ===`;
     }
   }
 
@@ -556,8 +499,9 @@ When you learn something new about the user that would be useful to remember (th
     // Computer use needs many more turns (each click+screenshot is one)
     const MAX_LOOPS = userRecord?.sandbox_id ? 30 : 5;
 
-    // If user has a sandbox, give the agent computer use capability
-    const useComputerUse = !!userRecord?.sandbox_id;
+    // Computer use is enabled if E2B is configured
+    // We don't create a sandbox until the agent actually uses the computer tool
+    const useComputerUse = !!process.env.E2B_API_KEY && !!userEmail;
     const computerTool = useComputerUse ? [{
       type: "computer_20250124",
       name: "computer",
@@ -565,6 +509,21 @@ When you learn something new about the user that would be useful to remember (th
       display_height_px: 800,
       display_number: 0
     }] : [];
+
+    // Helper to lazily create+resume the user's sandbox on first computer action
+    async function ensureLiveSandbox() {
+      if (!userRecord) return null;
+      if (userRecord.sandbox_id) {
+        const alive = await sandbox.isSandboxAlive(userRecord.sandbox_id);
+        if (alive) return userRecord.sandbox_id;
+        console.log(`  [SBX] Old sandbox ${userRecord.sandbox_id} is gone, creating fresh one`);
+      }
+      const newId = await sandbox.createSandbox();
+      userRecord.sandbox_id = newId;
+      users.set(userEmail, userRecord);
+      store.saveUsers(users);
+      return newId;
+    }
 
     while (loopCount < MAX_LOOPS) {
       loopCount++;
@@ -604,8 +563,19 @@ When you learn something new about the user that would be useful to remember (th
           const toolInput = toolInputJson ? JSON.parse(toolInputJson) : {};
 
           // ─── COMPUTER USE: handle the native Anthropic computer tool ───
-          if (currentToolUse.name === "computer" && userRecord?.sandbox_id) {
-            const sbxId = userRecord.sandbox_id;
+          if (currentToolUse.name === "computer" && userEmail) {
+            const sbxId = await ensureLiveSandbox();
+            if (!sbxId) {
+              toolResults.push({
+                type: "tool_result",
+                tool_use_id: currentToolUse.id,
+                content: "Could not create a sandbox for computer use",
+                is_error: true
+              });
+              currentToolUse = null;
+              toolInputJson = "";
+              continue;
+            }
             const action = toolInput.action;
             const coord = toolInput.coordinate;
             const text = toolInput.text;
@@ -696,13 +666,13 @@ When you learn something new about the user that would be useful to remember (th
           }
 
           // ─── REGULAR TOOLS ───
-          // Load user's keypair from THEIR sandbox (not from the server)
+          // Load user's keypair from the encrypted server vault
           let userKeypair = null;
-          if (userRecord?.sandbox_id) {
+          if (userEmail) {
             try {
-              userKeypair = await sandbox.getKeypair(userRecord.sandbox_id);
+              userKeypair = vault.getKeypair(userEmail);
             } catch (e) {
-              console.log("  [WARN] Could not load keypair from sandbox:", e.message);
+              console.log("  [WARN] Could not load keypair from vault:", e.message);
             }
           }
 

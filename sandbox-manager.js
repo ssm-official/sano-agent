@@ -1,66 +1,42 @@
 // SANO Sandbox Manager — per-user E2B DESKTOP sandboxes
-// Each user gets a real Linux desktop with browser, mouse, keyboard, screen.
-// Server is just an orchestrator.
+// ONLY for desktop/browser/computer-use. Wallets are stored in wallet-vault.js,
+// not in the sandbox. Sandboxes are disposable — losing one is no big deal.
 
 const { Sandbox } = require("@e2b/desktop");
-const { Keypair } = require("@solana/web3.js");
-const bs58 = require("bs58").default || require("bs58");
 
 // Cache live sandboxes (don't reconnect on every call)
 const liveSandboxes = new Map(); // sandboxId -> { sbx, lastUsed }
-const SANDBOX_IDLE_MS = 60 * 1000; // pause after 60s of inactivity
-
-// File paths inside each user's sandbox
-const PATHS = {
-  wallet: "/home/user/wallet.json",
-  memory: "/home/user/memory.md",
-  state: "/home/user/state.json"
-};
+const SANDBOX_IDLE_MS = 60 * 1000;
 
 // ─── Lifecycle ───
 
-async function createUserSandbox(email) {
+// Create a fresh desktop sandbox. Returns the sandbox ID.
+// Lightweight — no wallet, no setup. Just a desktop ready to use.
+async function createSandbox() {
   if (!process.env.E2B_API_KEY) {
     throw new Error("E2B_API_KEY not set");
   }
-
-  console.log(`  [SBX] Creating desktop sandbox for ${email}...`);
-  // Use the maximum allowed timeout (1 hour) so sandbox stays alive longer
+  console.log(`  [SBX] Creating desktop sandbox...`);
   const sbx = await Sandbox.create({
     timeoutMs: 60 * 60 * 1000,  // 1 hour max running time
     resolution: [1280, 800],
     dpi: 96
   });
   const sandboxId = sbx.sandboxId;
-  console.log(`  [SBX] Created ${sandboxId} for ${email}`);
 
-  // Generate the wallet keypair (fast, server-side)
-  const keypair = Keypair.generate();
-  const walletData = {
-    public_key: keypair.publicKey.toBase58(),
-    secret_key: bs58.encode(keypair.secretKey),
-    created: new Date().toISOString()
-  };
+  // Cache the live connection so the next call doesn't reconnect
+  liveSandboxes.set(sandboxId, { sbx, lastUsed: Date.now() });
 
-  await Promise.all([
-    sbx.files.write(PATHS.wallet, JSON.stringify(walletData, null, 2)),
-    sbx.files.write(PATHS.memory, `# Memory for ${email}\n\n## Profile\n- email: ${email}\n- account created: ${new Date().toISOString()}\n\n## Notes\n`),
-    sbx.files.write(PATHS.state, JSON.stringify({ created: new Date().toISOString() }))
-  ]);
-
-  // Pause immediately so it persists across server restarts.
-  // Paused sandboxes are kept indefinitely by E2B.
+  // Pause immediately so it persists across server restarts
   try {
     await sbx.pause();
-    console.log(`  [SBX] Paused ${sandboxId}`);
+    liveSandboxes.delete(sandboxId);
+    console.log(`  [SBX] Created and paused ${sandboxId}`);
   } catch (e) {
     console.log(`  [SBX] Pause warning:`, e.message);
   }
 
-  return {
-    sandboxId,
-    wallet: walletData.public_key
-  };
+  return sandboxId;
 }
 
 // Resume an existing sandbox (or use cached connection)
@@ -88,77 +64,6 @@ async function isSandboxAlive(sandboxId) {
   } catch (e) {
     return false;
   }
-}
-
-// ─── Wallet ops ───
-
-async function getWallet(sandboxId) {
-  const sbx = await getSandbox(sandboxId);
-  const raw = await sbx.files.read(PATHS.wallet);
-  return JSON.parse(raw);
-}
-
-async function getKeypair(sandboxId) {
-  const wallet = await getWallet(sandboxId);
-  return Keypair.fromSecretKey(bs58.decode(wallet.secret_key));
-}
-
-async function getWalletAddress(sandboxId) {
-  const wallet = await getWallet(sandboxId);
-  return wallet.public_key;
-}
-
-// ─── Memory ops ───
-
-async function readMemory(sandboxId) {
-  try {
-    const sbx = await getSandbox(sandboxId);
-    return await sbx.files.read(PATHS.memory);
-  } catch (e) {
-    return "";
-  }
-}
-
-async function writeMemory(sandboxId, content) {
-  const sbx = await getSandbox(sandboxId);
-  await sbx.files.write(PATHS.memory, content);
-}
-
-async function appendToMemory(sandboxId, fact, section = "Notes") {
-  let memory = await readMemory(sandboxId);
-  if (!memory) memory = `## ${section}\n`;
-  if (!memory.includes(`## ${section}`)) {
-    memory += `\n\n## ${section}\n`;
-  }
-  const lines = memory.split("\n");
-  const idx = lines.findIndex(l => l.trim() === `## ${section}`);
-  if (idx === -1) memory += `\n- ${fact}`;
-  else { lines.splice(idx + 1, 0, `- ${fact}`); memory = lines.join("\n"); }
-  await writeMemory(sandboxId, memory);
-  return memory;
-}
-
-async function removeFromMemory(sandboxId, query) {
-  let memory = await readMemory(sandboxId);
-  if (!memory) return memory;
-  const lines = memory.split("\n");
-  memory = lines.filter(l => !l.toLowerCase().includes(query.toLowerCase())).join("\n");
-  await writeMemory(sandboxId, memory);
-  return memory;
-}
-
-// ─── Generic state ops ───
-
-async function readState(sandboxId) {
-  try {
-    const sbx = await getSandbox(sandboxId);
-    return JSON.parse(await sbx.files.read(PATHS.state));
-  } catch (e) { return {}; }
-}
-
-async function writeState(sandboxId, obj) {
-  const sbx = await getSandbox(sandboxId);
-  await sbx.files.write(PATHS.state, JSON.stringify(obj, null, 2));
 }
 
 // ─── Computer Use: Desktop control ───
@@ -256,11 +161,7 @@ setInterval(async () => {
 }, 30 * 1000);
 
 module.exports = {
-  createUserSandbox, getSandbox, isSandboxAlive,
-  getWallet, getKeypair, getWalletAddress,
-  readMemory, writeMemory, appendToMemory, removeFromMemory,
-  readState, writeState,
+  createSandbox, getSandbox, isSandboxAlive,
   takeScreenshot, leftClick, rightClick, doubleClick, moveMouse,
-  typeText, pressKey, scroll, launchApp, openUrl, getStreamUrl,
-  PATHS
+  typeText, pressKey, scroll, launchApp, openUrl, getStreamUrl
 };
