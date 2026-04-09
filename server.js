@@ -1,59 +1,103 @@
 require("dotenv").config();
 const express = require("express");
+const path = require("path");
 const Anthropic = require("@anthropic-ai/sdk").default;
 const { TOOLS, TOOL_CATEGORIES } = require("./tools");
 const { executeTool } = require("./tool-executor");
 const { v4: uuidv4 } = require("uuid");
+const fetch = require("node-fetch");
+const { Connection, PublicKey, LAMPORTS_PER_SOL } = require("@solana/web3.js");
 
 const app = express();
 app.use(express.json());
-app.use(express.static("public"));
+
+const SOLANA_RPC = process.env.SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com";
+const connection = new Connection(SOLANA_RPC, "confirmed");
+
+// Inject Privy app ID into frontend
+app.get("/", (req, res) => {
+  const fs = require("fs");
+  let html = fs.readFileSync(path.join(__dirname, "public", "index.html"), "utf-8");
+  // Inject config before app.js loads
+  const config = `<script>window.__SANO_CONFIG__ = { PRIVY_APP_ID: "${process.env.PRIVY_APP_ID || ""}" };</script>`;
+  html = html.replace("</head>", `${config}\n</head>`);
+  res.send(html);
+});
+
+// Serve static files (but not index.html, we handle that above)
+app.use(express.static("public", { index: false }));
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-// In-memory session store (use Redis/DB in production)
+// Session store
 const sessions = new Map();
 
 const SYSTEM_PROMPT = `You are SANO — an AI agent that shops, trades, and executes on Solana, all from this chat interface.
 
-You have access to 30+ tools that let you:
-• Shop 1B+ products on Amazon & Shopify — paid with USDC
-• Swap any token instantly via Jupiter (best price routing across all Solana DEXs)
-• Buy & sell 170+ stocks, commodities, and ETFs
-• Trade prediction markets (Polymarket, Drift)
-• Book flights and hotels — paid with USDC
-• Send payments to anyone on-chain (addresses, .sol domains)
-• Create virtual Visa cards funded with USDC
-• USDC credit lines backed by on-chain assets
-• DeFi: staking, lending, borrowing, yield farming
-• Portfolio tracking, price alerts, subscriptions, and DCA
+You have 30+ real tools connected to live APIs:
+
+LIVE INTEGRATIONS:
+• Jupiter DEX — real token swaps, quotes, and limit orders on Solana (best price routing)
+• Solana RPC — real wallet balances, token holdings, transaction history
+• On-chain payments — real SOL/SPL token transfers to any address or .sol domain
+• Token prices — real-time via Jupiter Price API and CoinGecko
+• Polymarket — real prediction market search
+• DeFi protocols — Marinade, Jito, Kamino, Marginfi, Orca, Raydium (real yield data)
+
+AVAILABLE WITH API KEYS:
+• Amazon search (1B+ products) — needs SEARCH_API_KEY (ScaleSERP)
+• Flights & hotels — needs AMADEUS_API_KEY (free tier at amadeus.com)
+• Shopify search — works with any store URL
+• Virtual Visa cards — needs card provider (Immersve/Helio)
+• Stock trading — needs tokenized asset platform integration
 
 PERSONALITY:
 - You are fast, confident, and concise
 - You speak like a knowledgeable friend who's also a power user
-- Use short paragraphs. No walls of text
-- When showing results (products, flights, etc), format them clearly
-- Always confirm before executing purchases, swaps, or trades over $100
-- Show the USDC cost before any transaction
-- When comparing options, use clear formatting
+- Short paragraphs, no walls of text
+- When showing results, format them clearly with markdown
+- Always confirm before executing transactions over $50
+- Show exact amounts and prices before any swap or purchase
+- When a tool returns "api_key_required", explain what's needed clearly and suggest alternatives
 
 RULES:
-- Always use the appropriate tool — don't make up data
-- For purchases: search first, show options, then buy on confirmation
-- For swaps: show the quote first, then execute on confirmation
-- Show transaction signatures after on-chain actions
-- If the user's request is ambiguous, ask a clarifying question
-- Keep your wallet security top of mind — never expose private keys
+- Always use tools for real data — never make up prices, balances, or results
+- For swaps: ALWAYS get a quote first, show the user, then execute on confirmation
+- For payments: show amount and recipient clearly, then execute
+- Show transaction signatures/explorer links after on-chain actions
+- The user's wallet address is provided in the context — use it for on-chain tools
+- If something requires an API key that isn't configured, be honest and tell them what's needed`;
 
-FORMAT:
-- Use markdown for formatting
-- Use tables for comparisons when helpful
-- Show prices in USD/USDC
-- Include relevant emojis sparingly for visual clarity (🛒 🔄 ✈️ 💳 📊)`;
+// Real wallet balance endpoint
+app.post("/api/wallet/balance", async (req, res) => {
+  try {
+    const { address } = req.body;
+    if (!address) return res.json({ error: "No address" });
 
-// Chat endpoint with streaming
+    const pubkey = new PublicKey(address);
+    const balance = await connection.getBalance(pubkey);
+    const solAmount = balance / LAMPORTS_PER_SOL;
+
+    // Get USDC balance
+    const USDC_MINT = new PublicKey("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
+    let usdcBalance = 0;
+
+    try {
+      const tokenAccounts = await connection.getParsedTokenAccountsByOwner(pubkey, { mint: USDC_MINT });
+      if (tokenAccounts.value.length > 0) {
+        usdcBalance = parseFloat(tokenAccounts.value[0].account.data.parsed.info.tokenAmount.uiAmountString || "0");
+      }
+    } catch (e) {}
+
+    res.json({ sol: solAmount, usdc: usdcBalance, address });
+  } catch (e) {
+    res.json({ error: e.message });
+  }
+});
+
+// Chat endpoint with streaming + agentic loop
 app.post("/api/chat", async (req, res) => {
-  const { message, sessionId } = req.body;
+  const { message, sessionId, walletAddress } = req.body;
   const sid = sessionId || uuidv4();
 
   if (!sessions.has(sid)) {
@@ -63,23 +107,29 @@ app.post("/api/chat", async (req, res) => {
   const history = sessions.get(sid);
   history.push({ role: "user", content: message });
 
-  // Set up SSE
+  // SSE headers
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
   res.setHeader("X-Session-Id", sid);
+
+  // Build system prompt with wallet context
+  let systemPrompt = SYSTEM_PROMPT;
+  if (walletAddress) {
+    systemPrompt += `\n\nUSER WALLET: ${walletAddress}\nAlways use this address for on-chain operations. Pass it to wallet_balance, send_payment, etc.`;
+  }
 
   try {
     let messages = [...history];
     let fullResponse = "";
     let toolResults = [];
 
-    // Agentic loop — keep going until no more tool calls
+    // Agentic loop
     while (true) {
       const stream = anthropic.messages.stream({
         model: "claude-sonnet-4-20250514",
         max_tokens: 4096,
-        system: SYSTEM_PROMPT,
+        system: systemPrompt,
         tools: TOOLS,
         messages
       });
@@ -95,7 +145,6 @@ app.post("/api/chat", async (req, res) => {
             hasToolUse = true;
             currentToolUse = { id: event.content_block.id, name: event.content_block.name };
             toolInputJson = "";
-            // Send tool_start event to frontend
             res.write(`data: ${JSON.stringify({ type: "tool_start", tool: currentToolUse.name })}\n\n`);
           }
         } else if (event.type === "content_block_delta") {
@@ -106,11 +155,11 @@ app.post("/api/chat", async (req, res) => {
             toolInputJson += event.delta.partial_json;
           }
         } else if (event.type === "content_block_stop" && currentToolUse) {
-          // Execute the tool
           const toolInput = toolInputJson ? JSON.parse(toolInputJson) : {};
-          const toolResult = executeTool(currentToolUse.name, toolInput);
 
-          // Send tool result to frontend
+          // Execute tool with real APIs
+          const toolResult = await executeTool(currentToolUse.name, toolInput, walletAddress);
+
           res.write(`data: ${JSON.stringify({
             type: "tool_result",
             tool: currentToolUse.name,
@@ -129,12 +178,7 @@ app.post("/api/chat", async (req, res) => {
         }
       }
 
-      // If there were tool calls, add assistant message and tool results, then loop
       if (hasToolUse) {
-        const assistantContent = [];
-        if (textContent) assistantContent.push({ type: "text", text: textContent });
-
-        // Reconstruct tool_use blocks from what we processed
         const finalMessage = await stream.finalMessage();
         messages.push({ role: "assistant", content: finalMessage.content });
         messages.push({ role: "user", content: toolResults });
@@ -143,7 +187,6 @@ app.post("/api/chat", async (req, res) => {
         toolResults = [];
         textContent = "";
 
-        // If stop_reason is end_turn, break
         if (finalMessage.stop_reason === "end_turn") break;
       } else {
         fullResponse += textContent;
@@ -151,7 +194,6 @@ app.post("/api/chat", async (req, res) => {
       }
     }
 
-    // Save assistant response to history
     history.push({ role: "assistant", content: fullResponse });
 
     res.write(`data: ${JSON.stringify({ type: "done", sessionId: sid })}\n\n`);
@@ -163,19 +205,9 @@ app.post("/api/chat", async (req, res) => {
   }
 });
 
-// Get tool categories for UI
+// Tool categories for UI
 app.get("/api/tools", (req, res) => {
   res.json({ tools: TOOLS.map(t => ({ name: t.name, description: t.description })), categories: TOOL_CATEGORIES });
-});
-
-// Wallet mock endpoint
-app.get("/api/wallet", (req, res) => {
-  res.json({
-    address: "SANO...demo",
-    balance_usdc: 4250.00,
-    balance_sol: 42.5,
-    connected: true
-  });
 });
 
 const PORT = process.env.PORT || 3000;
@@ -185,5 +217,9 @@ app.listen(PORT, () => {
   console.log(`  ███████ ███████ ██ ██  ██ ██    ██ `);
   console.log(`       ██ ██   ██ ██  ██ ██ ██    ██ `);
   console.log(`  ██████  ██   ██ ██   ████  ██████  `);
-  console.log(`\n  🟢 SANO Agent running → http://localhost:${PORT}\n`);
+  console.log(`\n  🟢 SANO Agent running → http://localhost:${PORT}`);
+  console.log(`  📡 Solana RPC: ${SOLANA_RPC}`);
+  console.log(`  🔑 Privy: ${process.env.PRIVY_APP_ID ? "Configured" : "Not set"}`);
+  console.log(`  🛒 Amazon Search: ${process.env.SEARCH_API_KEY ? "Configured" : "Not set"}`);
+  console.log(`  ✈️  Amadeus Flights: ${process.env.AMADEUS_API_KEY ? "Configured" : "Not set"}\n`);
 });
