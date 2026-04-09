@@ -181,8 +181,11 @@ $("#new-chat").addEventListener("click", () => {
 
 $$(".nav-item").forEach(btn => {
   btn.addEventListener("click", () => {
-    send(btn.dataset.prompt);
-    $("#sidebar").classList.remove("open");
+    // Only nav-items with a data-prompt should trigger a chat message
+    if (btn.dataset.prompt) {
+      send(btn.dataset.prompt);
+      $("#sidebar").classList.remove("open");
+    }
   });
 });
 
@@ -202,11 +205,147 @@ $("#sign-out").addEventListener("click", () => {
   $("#auth-code").value = "";
 });
 
+// ─── Portfolio Panel ───
+const portfolioPanel = $("#portfolio-panel");
+$("#portfolio-btn").addEventListener("click", () => {
+  portfolioPanel.classList.remove("hidden");
+  loadPortfolio();
+});
+$("#portfolio-close").addEventListener("click", () => portfolioPanel.classList.add("hidden"));
+
+let currentPortfolioTab = "all";
+$$(".portfolio-tab").forEach(tab => {
+  tab.addEventListener("click", () => {
+    $$(".portfolio-tab").forEach(t => t.classList.remove("active"));
+    tab.classList.add("active");
+    currentPortfolioTab = tab.dataset.tab;
+    renderPortfolio();
+  });
+});
+
+let portfolioData = null;
+async function loadPortfolio() {
+  $("#portfolio-positions").innerHTML = `<div class="portfolio-empty">Loading...</div>`;
+  if (!walletAddress) {
+    $("#portfolio-positions").innerHTML = `<div class="portfolio-empty">Sign in to see your portfolio</div>`;
+    return;
+  }
+  try {
+    const res = await fetch("/api/wallet/balance", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ address: walletAddress })
+    });
+    const data = await res.json();
+    portfolioData = data;
+    renderPortfolio();
+  } catch (e) {
+    $("#portfolio-positions").innerHTML = `<div class="portfolio-empty">Couldn't load portfolio</div>`;
+  }
+}
+
+function renderPortfolio() {
+  if (!portfolioData) return;
+  const total = portfolioData.total_usd || 0;
+  $("#portfolio-total").textContent = "$" + total.toFixed(2);
+  // No P&L tracking yet — show flat
+  $("#portfolio-pnl").textContent = "Holdings overview";
+  $("#portfolio-pnl").className = "portfolio-pnl flat";
+
+  const cash = portfolioData.cash_holdings || [];
+  const stocks = portfolioData.stock_holdings || [];
+  const sol = portfolioData.sol_balance || 0;
+  const solUsd = portfolioData.sol_value_usd || 0;
+
+  let positions = [];
+
+  // Add SOL as a crypto position if non-zero
+  if (sol > 0.001) {
+    positions.push({
+      type: "crypto",
+      symbol: "SOL",
+      name: "Solana",
+      amount: sol.toFixed(4),
+      value_usd: solUsd
+    });
+  }
+
+  // Cash holdings (stablecoins, other tokens)
+  for (const c of cash) {
+    if ((c.value_usd || 0) < 0.01) continue;
+    positions.push({
+      type: "crypto",
+      symbol: c.token,
+      name: c.token,
+      amount: c.balance.toFixed(c.token === "USDC" || c.token === "USDT" ? 2 : 4),
+      value_usd: c.value_usd || 0
+    });
+  }
+
+  // Stock holdings
+  for (const s of stocks) {
+    positions.push({
+      type: "stock",
+      symbol: s.ticker,
+      name: s.ticker,
+      amount: s.shares.toFixed(6) + " sh",
+      value_usd: s.value_usd || 0
+    });
+  }
+
+  // Filter by tab
+  if (currentPortfolioTab === "stocks") positions = positions.filter(p => p.type === "stock");
+  if (currentPortfolioTab === "crypto") positions = positions.filter(p => p.type === "crypto");
+
+  if (positions.length === 0) {
+    $("#portfolio-positions").innerHTML = `<div class="portfolio-empty">No positions yet. Add funds and buy something to start.</div>`;
+    return;
+  }
+
+  // Sort by value desc
+  positions.sort((a, b) => b.value_usd - a.value_usd);
+
+  const html = positions.map(p => `
+    <div class="position-row">
+      <div class="position-icon ${p.type}">${p.symbol.slice(0, 4)}</div>
+      <div class="position-info">
+        <div class="position-name">${esc(p.name)}</div>
+        <div class="position-amount">${esc(p.amount)}</div>
+      </div>
+      <div class="position-value">
+        <div class="position-usd">$${p.value_usd.toFixed(2)}</div>
+      </div>
+      <div class="position-actions">
+        <button class="position-sell-btn" data-symbol="${esc(p.symbol)}" data-type="${p.type}">Sell</button>
+      </div>
+    </div>
+  `).join("");
+  $("#portfolio-positions").innerHTML = html;
+
+  // Wire up sell buttons
+  $$("#portfolio-positions .position-sell-btn").forEach(btn => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const sym = btn.dataset.symbol;
+      const type = btn.dataset.type;
+      portfolioPanel.classList.add("hidden");
+      if (type === "stock") {
+        send(`Sell all my ${sym} stock`);
+      } else {
+        send(`Sell all my ${sym} for USDC`);
+      }
+    });
+  });
+}
+
 // ─── Backup Key Modal ───
 $("#backup-key-btn").addEventListener("click", async () => {
   $("#backup-modal").classList.remove("hidden");
-  $("#backup-key-display").textContent = "Loading...";
-  $("#backup-wallet-display").textContent = walletAddress || "—";
+  $("#backup-sol-address").textContent = "Loading...";
+  $("#backup-sol-key").textContent = "Loading...";
+  $("#backup-evm-address").textContent = "Loading...";
+  $("#backup-evm-key").textContent = "Loading...";
+
   try {
     const res = await fetch("/api/wallet/export", {
       method: "POST",
@@ -215,25 +354,40 @@ $("#backup-key-btn").addEventListener("click", async () => {
     });
     const data = await res.json();
     if (data.error) {
-      $("#backup-key-display").textContent = "Error: " + data.error;
+      $("#backup-sol-key").textContent = "Error: " + data.error;
+      return;
+    }
+    // Solana
+    const sol = data.solana || { address: data.public_key, private_key: data.private_key };
+    $("#backup-sol-address").textContent = sol.address || "—";
+    $("#backup-sol-key").textContent = sol.private_key || "—";
+    // EVM (might not exist for old accounts until next signin)
+    if (data.evm) {
+      $("#backup-evm-address").textContent = data.evm.address;
+      $("#backup-evm-key").textContent = data.evm.private_key;
     } else {
-      $("#backup-key-display").textContent = data.private_key;
-      $("#backup-wallet-display").textContent = data.wallet;
+      $("#backup-evm-address").textContent = "(sign out and back in to generate)";
+      $("#backup-evm-key").textContent = "(sign out and back in to generate)";
     }
   } catch (e) {
-    $("#backup-key-display").textContent = "Could not load key";
+    $("#backup-sol-key").textContent = "Could not load keys";
   }
 });
 $("#backup-modal-close").addEventListener("click", () => $("#backup-modal").classList.add("hidden"));
 $("#backup-modal").addEventListener("click", e => { if (e.target.id === "backup-modal") $("#backup-modal").classList.add("hidden"); });
-$("#copy-backup-key").addEventListener("click", () => {
-  const key = $("#backup-key-display").textContent;
-  if (key && !key.includes("Error") && !key.includes("Loading")) {
-    navigator.clipboard.writeText(key);
-    $("#copy-backup-key").textContent = "Copied";
-    setTimeout(() => $("#copy-backup-key").textContent = "Copy", 2000);
-  }
-});
+
+function setupCopyBtn(btnId, srcId) {
+  $("#" + btnId).addEventListener("click", () => {
+    const v = $("#" + srcId).textContent;
+    if (v && !v.includes("Loading") && !v.includes("Error") && !v.startsWith("(")) {
+      navigator.clipboard.writeText(v);
+      $("#" + btnId).textContent = "Copied";
+      setTimeout(() => $("#" + btnId).textContent = "Copy", 2000);
+    }
+  });
+}
+setupCopyBtn("copy-sol-key", "backup-sol-key");
+setupCopyBtn("copy-evm-key", "backup-evm-key");
 
 // ─── Fund Modal ───
 $("#add-funds-btn").addEventListener("click", () => { $("#fund-modal").classList.remove("hidden"); });
@@ -489,29 +643,39 @@ function renderProductGrid(products) {
 function renderGiftCardReceipt(r) {
   const div = document.createElement("div");
   div.className = "receipt-card";
+  const hasCode = r.redemption_code && !r.redemption_code.includes("Pending") && !r.redemption_code.includes("Delivering");
+  const hasLink = r.redemption_link;
   div.innerHTML = `
     <div class="receipt-header">
       <div class="receipt-icon">\u2713</div>
       <div>
         <div class="receipt-title">Purchase complete</div>
-        <div class="receipt-subtitle">${esc(r.merchant)} \u2022 $${r.amount_usd}</div>
+        <div class="receipt-subtitle">${esc(r.merchant)}${r.amount_usd ? " \u2022 $" + r.amount_usd : ""}</div>
       </div>
     </div>
     <div class="receipt-body">
-      <div class="receipt-row"><span class="label">Store</span><span class="value">${esc(r.merchant)}</span></div>
-      <div class="receipt-row"><span class="label">Amount</span><span class="value">$${r.amount_usd}</span></div>
-      ${r.redemption_code && !r.redemption_code.includes("Pending") ? `
-        <div style="margin-top:4px">
-          <div class="label" style="font-size:12px;color:var(--text-3);margin-bottom:6px">Your code:</div>
+      ${hasCode ? `
+        <div>
+          <div class="label" style="font-size:12px;color:var(--text-3);margin-bottom:6px;font-weight:500">Redemption code</div>
           <div class="receipt-code">
             <span>${esc(r.redemption_code)}</span>
             <button class="copy-code-btn">Copy</button>
           </div>
         </div>
-      ` : `
-        <div class="receipt-row"><span class="label">Code</span><span class="value">Delivering...</span></div>
-      `}
-      ${r.explorer ? `<a href="${esc(r.explorer)}" target="_blank" class="receipt-link">View transaction</a>` : ""}
+      ` : ""}
+      ${hasLink ? `
+        <div>
+          <div class="label" style="font-size:12px;color:var(--text-3);margin-bottom:6px;font-weight:500">Redeem at</div>
+          <a href="${esc(r.redemption_link)}" target="_blank" rel="noopener" class="redeem-link-btn">Open redemption page \u2192</a>
+        </div>
+      ` : ""}
+      ${!hasCode && !hasLink ? `
+        <div class="receipt-row"><span class="label">Status</span><span class="value">Delivering... check your activity in a few minutes</span></div>
+      ` : ""}
+      <div class="receipt-row"><span class="label">Store</span><span class="value">${esc(r.merchant)}</span></div>
+      ${r.amount_usd ? `<div class="receipt-row"><span class="label">Paid</span><span class="value">$${r.amount_usd}</span></div>` : ""}
+      ${r.invoice_id ? `<div class="receipt-row"><span class="label">Order ID</span><span class="value" style="font-family:var(--mono);font-size:11px">${esc(r.invoice_id.slice(0, 12))}...</span></div>` : ""}
+      ${r.explorer ? `<a href="${esc(r.explorer)}" target="_blank" class="receipt-link">View transaction on Solscan</a>` : ""}
     </div>
   `;
 

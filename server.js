@@ -252,12 +252,19 @@ app.post("/api/auth/verify", async (req, res) => {
 
   // Make sure they have a wallet in the vault
   if (!vault.hasWallet(key)) {
-    const { publicKey } = vault.createWallet(key);
+    const { publicKey, evmAddress } = vault.createWallet(key);
     user.wallet = publicKey;
+    user.evm_wallet = evmAddress;
     firstSignin = true;
-    console.log(`  [VAULT] Created wallet for ${key} -> ${publicKey}`);
-  } else if (!user.wallet) {
-    user.wallet = vault.getPublicKey(key);
+    console.log(`  [VAULT] Created wallets for ${key} -> SOL: ${publicKey}, EVM: ${evmAddress}`);
+  } else {
+    if (!user.wallet) user.wallet = vault.getPublicKey(key);
+    // Migrate: ensure existing users have an EVM wallet too
+    const evmAddr = vault.getEvmAddress(key);
+    if (evmAddr && !user.evm_wallet) {
+      user.evm_wallet = evmAddr;
+      console.log(`  [VAULT] Added EVM wallet for ${key}: ${evmAddr}`);
+    }
   }
 
   // Initialize memory if missing

@@ -60,14 +60,8 @@
       </div>
 
       <nav class="sidebar-nav">
-        <div class="nav-label">Quick actions</div>
-        <button class="nav-item" data-prompt="What's my balance?">Check balance</button>
-        <button class="nav-item" data-prompt="Show my recent transactions">Recent activity</button>
-        <button class="nav-item" data-prompt="What are the best savings rates right now?">Earn interest</button>
-        <button class="nav-item" data-prompt="Show me what I can do">All features</button>
-
-        <div class="nav-label">Account</div>
-        <button class="nav-item" id="backup-key-btn">Backup private key</button>
+        <button class="nav-item" id="portfolio-btn">Portfolio</button>
+        <button class="nav-item" id="backup-key-btn">Backup keys</button>
       </nav>
 
       <div class="sidebar-bottom">
@@ -122,23 +116,68 @@
     </main>
   </div>
 
+  <!-- Portfolio Panel -->
+  <div class="portfolio-panel hidden" id="portfolio-panel">
+    <div class="portfolio-header">
+      <h3>Your portfolio</h3>
+      <button class="btn-icon" id="portfolio-close">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="portfolio-summary">
+      <div class="portfolio-total-label">Total value</div>
+      <div class="portfolio-total" id="portfolio-total">$0.00</div>
+      <div class="portfolio-pnl" id="portfolio-pnl">—</div>
+    </div>
+    <div class="portfolio-tabs">
+      <button class="portfolio-tab active" data-tab="all">All</button>
+      <button class="portfolio-tab" data-tab="stocks">Stocks</button>
+      <button class="portfolio-tab" data-tab="crypto">Crypto</button>
+    </div>
+    <div class="portfolio-positions" id="portfolio-positions">
+      <div class="portfolio-empty">Loading...</div>
+    </div>
+  </div>
+
   <!-- Backup Key Modal -->
   <div class="modal-overlay hidden" id="backup-modal">
-    <div class="modal">
+    <div class="modal" style="max-width:520px">
       <div class="modal-header">
-        <h3>Backup your account</h3>
+        <h3>Backup your wallets</h3>
         <button class="btn-icon modal-close" id="backup-modal-close">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M18 6 6 18M6 6l12 12"/></svg>
         </button>
       </div>
       <div class="modal-body">
-        <p style="color:var(--red);font-size:13px;margin-bottom:12px"><strong>Important:</strong> Save this key somewhere safe. Anyone with this key has full access to your account and funds. Without it, if our servers fail, your funds are gone.</p>
-        <p style="font-size:12px;color:var(--text-3);margin-bottom:14px">You can import this into Phantom, Solflare, or any Solana wallet to recover your account.</p>
-        <div class="receipt-code">
-          <span id="backup-key-display" style="font-size:11px">Loading...</span>
-          <button id="copy-backup-key">Copy</button>
+        <p style="color:var(--red);font-size:13px;margin-bottom:14px;padding:10px;background:var(--red-soft);border-radius:8px"><strong>Important:</strong> Save these keys somewhere safe. Anyone with them has full access to your funds. Without them, if our servers fail, your funds are gone.</p>
+
+        <div style="margin-bottom:18px">
+          <div style="font-size:11px;color:var(--text-3);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;font-weight:600">Solana</div>
+          <div style="font-size:11px;color:var(--text-3);margin-bottom:6px">Address</div>
+          <div class="receipt-code" style="margin-bottom:8px">
+            <span id="backup-sol-address" style="font-size:11px">—</span>
+          </div>
+          <div style="font-size:11px;color:var(--text-3);margin-bottom:6px">Private key</div>
+          <div class="receipt-code">
+            <span id="backup-sol-key" style="font-size:11px">—</span>
+            <button id="copy-sol-key">Copy</button>
+          </div>
         </div>
-        <p style="font-size:11px;color:var(--text-4);margin-top:12px">Wallet address: <span id="backup-wallet-display" style="font-family:var(--mono);color:var(--text-3)"></span></p>
+
+        <div style="margin-bottom:14px">
+          <div style="font-size:11px;color:var(--text-3);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;font-weight:600">Ethereum / Base / Polygon / Arbitrum</div>
+          <div style="font-size:11px;color:var(--text-3);margin-bottom:6px">Address (same on all EVM chains)</div>
+          <div class="receipt-code" style="margin-bottom:8px">
+            <span id="backup-evm-address" style="font-size:11px">—</span>
+          </div>
+          <div style="font-size:11px;color:var(--text-3);margin-bottom:6px">Private key</div>
+          <div class="receipt-code">
+            <span id="backup-evm-key" style="font-size:11px">—</span>
+            <button id="copy-evm-key">Copy</button>
+          </div>
+        </div>
+
+        <p style="font-size:11px;color:var(--text-4);margin-top:8px">Import these into Phantom (Solana) or MetaMask (Ethereum, Base, Polygon, Arbitrum) to control your funds yourself.</p>
       </div>
     </div>
   </div>

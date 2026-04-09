@@ -7,6 +7,7 @@ const path = require("path");
 const crypto = require("crypto");
 const { Keypair } = require("@solana/web3.js");
 const bs58 = require("bs58").default || require("bs58");
+const { Wallet: EvmWallet } = require("ethers");
 
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
 const VAULT_DIR = path.join(DATA_DIR, "wallets");
@@ -95,23 +96,87 @@ function decrypt(payload) {
 
 // ─── Public API ───
 
-// Create a brand-new wallet for a user. Returns the public key.
-// The secret is encrypted and stored. Caller can also access it once via the second return.
+// Create a brand-new MULTI-CHAIN wallet for a user.
+// Generates both a Solana keypair and an Ethereum wallet (one per chain).
+// Both are encrypted and stored in the same vault file.
 function createWallet(email) {
   ensureVault();
-  const keypair = Keypair.generate();
-  const publicKey = keypair.publicKey.toBase58();
-  const secretKey = bs58.encode(keypair.secretKey);
+
+  // Solana
+  const solKeypair = Keypair.generate();
+  const solPublicKey = solKeypair.publicKey.toBase58();
+  const solSecret = bs58.encode(solKeypair.secretKey);
+
+  // EVM (works for Ethereum, Base, Polygon, Arbitrum, Optimism — same address everywhere)
+  const evmWallet = EvmWallet.createRandom();
+  const evmAddress = evmWallet.address;
+  const evmSecret = evmWallet.privateKey;
 
   const payload = {
-    public_key: publicKey,
-    secret: encrypt(secretKey),
+    public_key: solPublicKey,           // Solana address (kept for backward compat)
+    secret: encrypt(solSecret),         // Solana secret encrypted
+    evm_address: evmAddress,            // Same address across all EVM chains
+    evm_secret: encrypt(evmSecret),     // EVM secret encrypted
     created: new Date().toISOString(),
     email: email.toLowerCase()
   };
 
   atomicWrite(path.join(VAULT_DIR, emailToFilename(email)), JSON.stringify(payload, null, 2));
-  return { publicKey, secretKey };
+  return {
+    publicKey: solPublicKey,
+    secretKey: solSecret,
+    evmAddress,
+    evmSecret
+  };
+}
+
+// Add an EVM wallet to an existing user (for migration of old Solana-only users)
+function addEvmWallet(email) {
+  ensureVault();
+  const file = path.join(VAULT_DIR, emailToFilename(email));
+  if (!fs.existsSync(file)) return null;
+  try {
+    const payload = JSON.parse(fs.readFileSync(file, "utf-8"));
+    if (payload.evm_address) return payload.evm_address; // already has one
+
+    const evmWallet = EvmWallet.createRandom();
+    payload.evm_address = evmWallet.address;
+    payload.evm_secret = encrypt(evmWallet.privateKey);
+    atomicWrite(file, JSON.stringify(payload, null, 2));
+    return evmWallet.address;
+  } catch (e) {
+    console.error("[VAULT] addEvmWallet failed for", email, ":", e.message);
+    return null;
+  }
+}
+
+// Get the EVM wallet for a user (creates one if missing)
+function getEvmWallet(email) {
+  ensureVault();
+  const file = path.join(VAULT_DIR, emailToFilename(email));
+  if (!fs.existsSync(file)) return null;
+  try {
+    let payload = JSON.parse(fs.readFileSync(file, "utf-8"));
+
+    // Migrate: add EVM wallet if missing
+    if (!payload.evm_address) {
+      const evmWallet = EvmWallet.createRandom();
+      payload.evm_address = evmWallet.address;
+      payload.evm_secret = encrypt(evmWallet.privateKey);
+      atomicWrite(file, JSON.stringify(payload, null, 2));
+    }
+
+    const secret = decrypt(payload.evm_secret);
+    return new EvmWallet(secret);
+  } catch (e) {
+    console.error("[VAULT] getEvmWallet failed:", e.message);
+    return null;
+  }
+}
+
+function getEvmAddress(email) {
+  const w = getEvmWallet(email);
+  return w ? w.address : null;
 }
 
 // Get the wallet public key for a user (no decryption needed)
@@ -142,18 +207,30 @@ function getKeypair(email) {
   }
 }
 
-// Get raw secret key (for export/backup display only)
+// Get raw secret keys (for export/backup display only)
 function exportSecret(email) {
   ensureVault();
   const file = path.join(VAULT_DIR, emailToFilename(email));
   if (!fs.existsSync(file)) return null;
   try {
     const payload = JSON.parse(fs.readFileSync(file, "utf-8"));
-    return {
-      public_key: payload.public_key,
-      secret_key: decrypt(payload.secret),
+    const result = {
+      solana: {
+        address: payload.public_key,
+        private_key: decrypt(payload.secret)
+      },
       created: payload.created
     };
+    if (payload.evm_address && payload.evm_secret) {
+      result.evm = {
+        address: payload.evm_address,
+        private_key: decrypt(payload.evm_secret)
+      };
+    }
+    // Backward compat fields for the existing UI
+    result.public_key = payload.public_key;
+    result.secret_key = decrypt(payload.secret);
+    return result;
   } catch (e) {
     return null;
   }
@@ -187,5 +264,9 @@ module.exports = {
   exportSecret,
   hasWallet,
   importWallet,
-  _getMasterKey: getMasterKey  // exported for credentials-vault to share
+  // Multi-chain
+  addEvmWallet,
+  getEvmWallet,
+  getEvmAddress,
+  _getMasterKey: getMasterKey
 };
