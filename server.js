@@ -15,6 +15,22 @@ const sandbox = require("./sandbox-manager");
 const vault = require("./wallet-vault");
 const credentialsVault = require("./credentials-vault");
 
+// Friendly action labels for the live computer preview
+function describeAction(action, input) {
+  switch (action) {
+    case "screenshot": return "Looking at screen";
+    case "left_click": return `Clicking`;
+    case "right_click": return "Right-clicking";
+    case "double_click": return "Double-clicking";
+    case "mouse_move": return "Moving cursor";
+    case "type": return `Typing "${(input.text || "").slice(0, 40)}${(input.text || "").length > 40 ? "..." : ""}"`;
+    case "key": return `Pressing ${input.text}`;
+    case "scroll": return `Scrolling ${input.scroll_direction || "down"}`;
+    case "wait": return "Waiting";
+    default: return action;
+  }
+}
+
 // Per-user mutex queue (prevents concurrent chat handling for same user)
 const userLocks = new Map(); // email -> Promise chain
 function withUserLock(email, fn) {
@@ -456,8 +472,9 @@ MEMORY — IMPORTANT:
 If the user has insufficient USDC, tell them to add funds first.
 
 HOW TO BEHAVE:
-- Be concise and direct. Short sentences. No filler
-- Format search results clearly with prices, ratings, key details
+- Be EXTREMELY concise. 1-2 sentences usually. No preamble. No "I'll do X for you" — just do it
+- The UI shows what tools you call, so don't restate them
+- Format search results clearly with prices, ratings, key details (UI handles cards, you don't list them in text)
 - Always confirm before spending any money
 - Show the exact price/cost before any purchase or transaction
 - NEVER mention API keys, configuration, setup, or technical issues to the user. If a tool returns an error about missing keys or "requires_integration", just say "This feature is coming soon" or "I can't do that yet" — keep it simple
@@ -484,22 +501,22 @@ You have an encrypted credentials vault per user. When the user shares site logi
 NEVER reveal passwords in chat unless the user explicitly asks "what's my password for X". Don't quote passwords in your text replies.
 
 COMPUTER USE — YOU HAVE A REAL COMPUTER:
-You have access to a real Linux desktop with a browser via the "computer" tool. You can take screenshots, click, type, scroll — anything a human can do on a computer. Use this to:
-- Browse any website (Tokopedia, Shopee, Amazon, eBay, anywhere)
-- Search for products on sites that don't have API integrations
-- Check forms, fill out checkout pages, navigate complex sites
-- Verify information by visiting the source
+You have a real Linux desktop with browser via the "computer" tool. Screenshot, click, type, scroll. Use it for any task that needs the web.
 
-How to use it:
-1. To open a website, take a screenshot first to see what's on screen
-2. If a browser isn't open, type the URL into the browser address bar (or use the computer tool to navigate)
-3. Take screenshots between actions to see the current state
-4. Click on links and buttons by their visible coordinates
-5. Type into fields after clicking on them first
+CRITICAL: BE SILENT WHILE WORKING.
+- Do NOT narrate what you're doing ("I'll take a screenshot now", "I see the search box", "Now I'll click")
+- Do NOT explain each action — the UI shows the user what's happening live
+- Do NOT describe screenshots
+- Just perform the actions silently
+- Only speak when you have:
+  - The final result the user asked for
+  - A question you need answered to proceed
+  - An error you can't recover from
+- Keep final responses short. 1-3 sentences is plenty.
 
-When the user asks for something that needs the web (e.g. "search Tokopedia for X", "what's on this website", "fill out this form"), use computer actions instead of telling them you can't.
+Wrong: "I'll search Tokopedia for you. Let me take a screenshot first. I can see the homepage. Now I'll click on the search box. Now I'll type your query. Pressing enter. I see the results loading. Here are the results..."
 
-For purchases on sites without gift card support: browse the site, find the product, but ALWAYS confirm with the user before completing any checkout. Save shipping info to memory so you don't have to ask twice.
+Right: (perform all actions silently) → "Found these:" + brief list
 
 Resolution: 1280x800. Browser: Firefox.`;
 
@@ -748,12 +765,13 @@ When you learn something new about the user that would be useful to remember (th
               await new Promise(r => setTimeout(r, 300)); // small wait for UI updates
               const screenshotB64 = await sandbox.takeScreenshot(sbxId);
 
-              // Tell client what action happened
+              // Send screenshot + action label to client for the live preview
+              const actionLabel = describeAction(action, toolInput);
               res.write(`data: ${JSON.stringify({
-                type: "tool_result",
-                tool: "computer",
-                input: toolInput,
-                result: { action, ok: true }
+                type: "computer_action",
+                action,
+                label: actionLabel,
+                screenshot: screenshotB64
               })}\n\n`);
 
               // Build the tool_result block for Anthropic with the screenshot as image

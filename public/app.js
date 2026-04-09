@@ -330,6 +330,14 @@ function addToolIndicator(toolName) {
   const body = bodies[bodies.length - 1];
   if (!body) return null;
 
+  // For "computer" tool, return the existing computer card if it exists,
+  // otherwise create one. This coalesces all computer actions into one card.
+  if (toolName === "computer") {
+    let card = body.querySelector(".computer-card");
+    if (!card) card = createComputerCard(body);
+    return card;
+  }
+
   const names = {
     product_search: "Searching products",
     buy_product: "Processing purchase",
@@ -349,6 +357,11 @@ function addToolIndicator(toolName) {
     stock_quote: "Getting quote",
     portfolio_summary: "Loading portfolio",
     transaction_history: "Loading activity",
+    save_credential: "Saving login",
+    get_credential: "Getting login",
+    list_credentials: "Loading logins",
+    remember: "Remembering",
+    forget: "Updating memory",
   };
 
   const label = names[toolName] || toolName.replace(/_/g, " ");
@@ -360,6 +373,66 @@ function addToolIndicator(toolName) {
   body.insertBefore(el, text);
   scroll();
   return el;
+}
+
+function createComputerCard(body) {
+  const card = document.createElement("div");
+  card.className = "computer-card";
+  card.dataset.actionCount = "0";
+  card.innerHTML = `
+    <div class="computer-header">
+      <div class="computer-icon">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+      </div>
+      <div class="computer-status">
+        <div class="computer-spinner"></div>
+        <span class="computer-status-text">Working...</span>
+      </div>
+      <div class="computer-action-count">0 actions</div>
+    </div>
+    <div class="computer-screenshot">
+      <div style="color:var(--text-4);font-size:12px">Loading desktop...</div>
+    </div>
+  `;
+  const text = body.querySelector(".msg-text");
+  body.insertBefore(card, text);
+  return card;
+}
+
+function updateComputerCard(card, action, label, screenshotB64) {
+  if (!card) return;
+  const count = parseInt(card.dataset.actionCount || "0", 10) + 1;
+  card.dataset.actionCount = String(count);
+
+  const statusText = card.querySelector(".computer-status-text");
+  if (statusText) statusText.textContent = label || action;
+
+  const counter = card.querySelector(".computer-action-count");
+  if (counter) counter.textContent = `${count} action${count === 1 ? "" : "s"}`;
+
+  const screenshotContainer = card.querySelector(".computer-screenshot");
+  if (screenshotContainer && screenshotB64) {
+    let img = screenshotContainer.querySelector("img");
+    if (!img) {
+      screenshotContainer.innerHTML = "";
+      img = document.createElement("img");
+      screenshotContainer.appendChild(img);
+      const overlay = document.createElement("div");
+      overlay.className = "computer-overlay";
+      screenshotContainer.appendChild(overlay);
+    }
+    img.src = `data:image/png;base64,${screenshotB64}`;
+    const overlay = screenshotContainer.querySelector(".computer-overlay");
+    if (overlay) overlay.textContent = label || action;
+  }
+  scroll();
+}
+
+function finishComputerCard(card) {
+  if (!card) return;
+  card.classList.add("done");
+  const statusText = card.querySelector(".computer-status-text");
+  if (statusText) statusText.textContent = "Done";
 }
 
 function finishToolIndicator(el, result, toolName) {
@@ -547,15 +620,33 @@ async function send(text) {
             if (!started) { textEl.innerHTML = ""; started = true; }
             currentTool = addToolIndicator(ev.tool);
             break;
+          case "computer_action":
+            // Live preview update for computer use — coalesces into single card
+            if (!started) { textEl.innerHTML = ""; started = true; }
+            const card = currentTool && currentTool.classList?.contains("computer-card")
+              ? currentTool
+              : addToolIndicator("computer");
+            updateComputerCard(card, ev.action, ev.label, ev.screenshot);
+            currentTool = card;
+            break;
           case "tool_result":
-            finishToolIndicator(currentTool, ev.result, ev.tool);
-            currentTool = null;
-            if (["jupiter_swap", "send_payment", "defi_stake"].includes(ev.tool)) {
-              setTimeout(loadBalance, 2000);
+            // For computer tool, finalize the card; for others, normal indicator
+            if (ev.tool === "computer") {
+              // Don't tear down — let next computer action update the same card
+              // We'll finalize when the assistant message ends (in 'done' handler)
+            } else {
+              finishToolIndicator(currentTool, ev.result, ev.tool);
+              currentTool = null;
+              if (["jupiter_swap", "send_payment", "defi_stake", "stock_trade"].includes(ev.tool)) {
+                setTimeout(loadBalance, 2000);
+              }
             }
             break;
           case "done":
             if (ev.sessionId) { sessionId = ev.sessionId; localStorage.setItem("sano_sid", sessionId); }
+            // Finalize any open computer card
+            const openCards = messages.querySelectorAll(".computer-card:not(.done)");
+            openCards.forEach(c => finishComputerCard(c));
             break;
           case "error":
             started = true; // mark started so the no-response fallback doesn't overwrite this
