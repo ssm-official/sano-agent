@@ -492,103 +492,278 @@ const EXECUTORS = {
     };
   },
 
-  // ─── Flights (Amadeus API — free tier available) ───
+  // ─── Flights & Hotels via Duffel API ───
   flight_search: async (input) => {
-    const amadeusKey = process.env.AMADEUS_API_KEY;
-    const amadeusSecret = process.env.AMADEUS_API_SECRET;
+    const duffelToken = process.env.DUFFEL_API_TOKEN;
 
-    if (amadeusKey && amadeusSecret) {
-      try {
-        // Get access token
-        const authRes = await fetch("https://api.amadeus.com/v1/security/oauth2/token", {
-          method: "POST",
-          headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          body: `grant_type=client_credentials&client_id=${amadeusKey}&client_secret=${amadeusSecret}`
-        });
-        const authData = await authRes.json();
-
-        const params = new URLSearchParams({
-          originLocationCode: input.origin,
-          destinationLocationCode: input.destination,
-          departureDate: input.departure_date,
-          adults: input.passengers || 1,
-          currencyCode: "USD",
-          max: 5
-        });
-        if (input.return_date) params.set("returnDate", input.return_date);
-
-        const flightRes = await fetch(`https://api.amadeus.com/v2/shopping/flight-offers?${params}`, {
-          headers: { Authorization: `Bearer ${authData.access_token}` }
-        });
-        const flightData = await flightRes.json();
-
-        if (flightData.data) {
-          return {
-            flights: flightData.data.map(f => ({
-              id: f.id,
-              price_usd: f.price?.total,
-              currency: f.price?.currency,
-              segments: f.itineraries?.[0]?.segments?.map(s => ({
-                carrier: s.carrierCode,
-                flight: s.carrierCode + s.number,
-                departure: s.departure?.at,
-                arrival: s.arrival?.at,
-                from: s.departure?.iataCode,
-                to: s.arrival?.iataCode,
-                duration: s.duration
-              })),
-              duration: f.itineraries?.[0]?.duration,
-              stops: (f.itineraries?.[0]?.segments?.length || 1) - 1
-            })),
-            route: `${input.origin} → ${input.destination}`,
-            date: input.departure_date,
-            source: "amadeus"
-          };
-        }
-      } catch (e) {
-        return { error: `Flight search failed: ${e.message}` };
-      }
+    if (!duffelToken) {
+      return {
+        status: "api_key_required",
+        message: `Flight search ${input.origin} → ${input.destination} on ${input.departure_date} requires a Duffel API token. Sign up free at duffel.com.`,
+        setup: "Set DUFFEL_API_TOKEN in environment variables.",
+        route: `${input.origin} → ${input.destination}`,
+        date: input.departure_date
+      };
     }
 
-    return {
-      status: "api_key_required",
-      message: `Flight search ${input.origin} → ${input.destination} on ${input.departure_date} requires Amadeus API credentials. Sign up free at amadeus.com/en/developer.`,
-      setup: "Set AMADEUS_API_KEY and AMADEUS_API_SECRET in environment variables.",
-      route: `${input.origin} → ${input.destination}`,
-      date: input.departure_date
-    };
+    try {
+      // Create offer request
+      const offerReqRes = await fetch("https://api.duffel.com/air/offer_requests", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${duffelToken}`,
+          "Duffel-Version": "v2",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          data: {
+            slices: [
+              {
+                origin: input.origin,
+                destination: input.destination,
+                departure_date: input.departure_date
+              },
+              ...(input.return_date ? [{
+                origin: input.destination,
+                destination: input.origin,
+                departure_date: input.return_date
+              }] : [])
+            ],
+            passengers: Array.from({ length: input.passengers || 1 }, () => ({ type: "adult" })),
+            cabin_class: input.cabin_class || "economy",
+            max_connections: 1
+          }
+        })
+      });
+
+      const offerReqData = await offerReqRes.json();
+
+      if (offerReqData.errors) {
+        return { error: offerReqData.errors.map(e => e.message).join(", ") };
+      }
+
+      const offers = offerReqData.data?.offers || [];
+      const topOffers = offers.slice(0, 5);
+
+      return {
+        flights: topOffers.map(offer => ({
+          id: offer.id,
+          price_usd: offer.total_amount,
+          currency: offer.total_currency,
+          airline: offer.owner?.name,
+          airline_logo: offer.owner?.logo_symbol_url,
+          segments: offer.slices?.map(slice => ({
+            origin: slice.origin?.iata_code,
+            destination: slice.destination?.iata_code,
+            departure: slice.segments?.[0]?.departing_at,
+            arrival: slice.segments?.[slice.segments.length - 1]?.arriving_at,
+            duration: slice.duration,
+            stops: (slice.segments?.length || 1) - 1,
+            carrier: slice.segments?.[0]?.operating_carrier?.name,
+            flight_number: slice.segments?.[0]?.operating_carrier_flight_number,
+            cabin_class: slice.segments?.[0]?.passengers?.[0]?.cabin_class_marketing_name
+          })),
+          conditions: {
+            refundable: offer.payment_requirements?.requires_instant_payment === false,
+            changeable: offer.conditions?.change_before_departure?.allowed
+          }
+        })),
+        total_offers: offers.length,
+        route: `${input.origin} → ${input.destination}`,
+        date: input.departure_date,
+        return_date: input.return_date || null,
+        source: "duffel"
+      };
+    } catch (e) {
+      return { error: `Flight search failed: ${e.message}` };
+    }
   },
 
-  flight_book: async (input) => {
-    return {
-      status: "requires_amadeus",
-      message: "Flight booking requires Amadeus Flight Orders API (production access). Configure credentials to enable real bookings paid with USDC.",
-      flight_id: input.flight_id
-    };
+  flight_book: async (input, walletAddress) => {
+    const duffelToken = process.env.DUFFEL_API_TOKEN;
+    if (!duffelToken) return { error: "Duffel API token not configured." };
+    if (!walletAddress) return { error: "Connect wallet to book flights." };
+
+    try {
+      // Create order from offer
+      const orderRes = await fetch("https://api.duffel.com/air/orders", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${duffelToken}`,
+          "Duffel-Version": "v2",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          data: {
+            selected_offers: [input.flight_id],
+            type: "instant",
+            passengers: [{
+              id: input.passenger_id || undefined,
+              given_name: input.passenger_name?.split(" ")[0] || "Passenger",
+              family_name: input.passenger_name?.split(" ").slice(1).join(" ") || "Name",
+              email: input.passenger_email,
+              born_on: input.date_of_birth || "1990-01-01",
+              gender: input.gender || "m",
+              phone_number: input.phone || "+10000000000",
+              title: "mr"
+            }],
+            payments: [{
+              type: "balance",
+              amount: input.amount || "0",
+              currency: "USD"
+            }]
+          }
+        })
+      });
+
+      const orderData = await orderRes.json();
+
+      if (orderData.errors) {
+        return { error: orderData.errors.map(e => e.message).join(", ") };
+      }
+
+      return {
+        status: "booked",
+        booking_reference: orderData.data?.booking_reference,
+        order_id: orderData.data?.id,
+        airline: orderData.data?.owner?.name,
+        total_amount: orderData.data?.total_amount,
+        currency: orderData.data?.total_currency,
+        passengers: orderData.data?.passengers?.map(p => ({
+          name: `${p.given_name} ${p.family_name}`,
+          email: p.email
+        })),
+        slices: orderData.data?.slices?.map(s => ({
+          origin: s.origin?.iata_code,
+          destination: s.destination?.iata_code,
+          departure: s.segments?.[0]?.departing_at
+        })),
+        message: `Flight booked! Ref: ${orderData.data?.booking_reference}. Confirmation sent to ${input.passenger_email}.`,
+        source: "duffel"
+      };
+    } catch (e) {
+      return { error: `Booking failed: ${e.message}` };
+    }
   },
 
   hotel_search: async (input) => {
-    const amadeusKey = process.env.AMADEUS_API_KEY;
-    const amadeusSecret = process.env.AMADEUS_API_SECRET;
+    const duffelToken = process.env.DUFFEL_API_TOKEN;
 
-    if (amadeusKey && amadeusSecret) {
-      // Similar to flights — use Amadeus Hotel API
+    if (!duffelToken) {
       return {
-        status: "ready",
-        message: `Hotel search in ${input.location} from ${input.checkin} to ${input.checkout}. Amadeus Hotel Search API configured.`,
+        status: "api_key_required",
+        message: `Hotel search for ${input.location} (${input.checkin} to ${input.checkout}) requires a Duffel API token. Sign up at duffel.com.`,
+        setup: "Set DUFFEL_API_TOKEN in environment variables.",
         location: input.location
       };
     }
 
-    return {
-      status: "api_key_required",
-      message: `Hotel search for ${input.location} (${input.checkin} to ${input.checkout}) requires Amadeus API. Free tier available.`,
-      location: input.location
-    };
+    try {
+      // Duffel Stays — search for accommodation
+      const searchRes = await fetch("https://api.duffel.com/stays/search", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${duffelToken}`,
+          "Duffel-Version": "v2",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          data: {
+            location: {
+              geographic_coordinates: null,
+              radius: 10,
+              search_type: "city",
+              value: input.location
+            },
+            check_in_date: input.checkin,
+            check_out_date: input.checkout,
+            guests: [{ type: "adult" }],
+            rooms: 1
+          }
+        })
+      });
+
+      const searchData = await searchRes.json();
+
+      if (searchData.errors) {
+        return { error: searchData.errors.map(e => e.message).join(", ") };
+      }
+
+      const results = searchData.data?.results || searchData.data || [];
+      const hotels = (Array.isArray(results) ? results : [results]).slice(0, 5);
+
+      return {
+        hotels: hotels.map(h => ({
+          id: h.id,
+          name: h.accommodation?.name || h.name,
+          location: h.accommodation?.location || input.location,
+          rating: h.accommodation?.rating || null,
+          price_per_night: h.cheapest_rate_total_amount ?
+            (parseFloat(h.cheapest_rate_total_amount) / Math.max(1, dateDiffDays(input.checkin, input.checkout))).toFixed(2) : null,
+          total_price: h.cheapest_rate_total_amount,
+          currency: h.cheapest_rate_currency || "USD",
+          amenities: h.accommodation?.amenities?.slice(0, 5),
+          image: h.accommodation?.photos?.[0]?.url,
+          rooms_available: h.rooms?.length
+        })),
+        location: input.location,
+        checkin: input.checkin,
+        checkout: input.checkout,
+        total_results: hotels.length,
+        source: "duffel_stays"
+      };
+    } catch (e) {
+      return { error: `Hotel search failed: ${e.message}` };
+    }
   },
 
-  hotel_book: async (input) => {
-    return { status: "requires_amadeus", message: "Hotel booking requires Amadeus API production access." };
+  hotel_book: async (input, walletAddress) => {
+    const duffelToken = process.env.DUFFEL_API_TOKEN;
+    if (!duffelToken) return { error: "Duffel API token not configured." };
+    if (!walletAddress) return { error: "Connect wallet to book hotels." };
+
+    try {
+      const bookRes = await fetch("https://api.duffel.com/stays/bookings", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${duffelToken}`,
+          "Duffel-Version": "v2",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          data: {
+            quote_id: input.room_id,
+            guests: [{
+              given_name: input.guest_name?.split(" ")[0] || "Guest",
+              family_name: input.guest_name?.split(" ").slice(1).join(" ") || "Name",
+              email: input.guest_email
+            }],
+            phone_number: input.phone || "+10000000000",
+            email: input.guest_email
+          }
+        })
+      });
+
+      const bookData = await bookRes.json();
+
+      if (bookData.errors) {
+        return { error: bookData.errors.map(e => e.message).join(", ") };
+      }
+
+      return {
+        status: "booked",
+        booking_id: bookData.data?.id,
+        confirmation_code: bookData.data?.reference,
+        hotel: bookData.data?.accommodation?.name,
+        total_amount: bookData.data?.total_amount,
+        currency: bookData.data?.total_currency,
+        guest: input.guest_name,
+        message: `Hotel booked! Confirmation sent to ${input.guest_email}.`,
+        source: "duffel_stays"
+      };
+    } catch (e) {
+      return { error: `Hotel booking failed: ${e.message}` };
+    }
   },
 
   // ─── DeFi — Real yield data ───
@@ -742,5 +917,12 @@ const EXECUTORS = {
     };
   }
 };
+
+// Helper: date diff in days
+function dateDiffDays(d1, d2) {
+  const a = new Date(d1);
+  const b = new Date(d2);
+  return Math.max(1, Math.round((b - a) / (1000 * 60 * 60 * 24)));
+}
 
 module.exports = { executeTool };

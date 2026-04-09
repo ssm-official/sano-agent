@@ -46,7 +46,7 @@ LIVE INTEGRATIONS:
 
 AVAILABLE WITH API KEYS:
 • Amazon search (1B+ products) — needs SEARCH_API_KEY (ScaleSERP)
-• Flights & hotels — needs AMADEUS_API_KEY (free tier at amadeus.com)
+• Flights & hotels — needs DUFFEL_API_TOKEN (duffel.com — real bookings)
 • Shopify search — works with any store URL
 • Virtual Visa cards — needs card provider (Immersve/Helio)
 • Stock trading — needs tokenized asset platform integration
@@ -221,5 +221,5 @@ app.listen(PORT, () => {
   console.log(`  📡 Solana RPC: ${SOLANA_RPC}`);
   console.log(`  🔑 Privy: ${process.env.PRIVY_APP_ID ? "Configured" : "Not set"}`);
   console.log(`  🛒 Amazon Search: ${process.env.SEARCH_API_KEY ? "Configured" : "Not set"}`);
-  console.log(`  ✈️  Amadeus Flights: ${process.env.AMADEUS_API_KEY ? "Configured" : "Not set"}\n`);
+  console.log(`  ✈️  Duffel (Flights+Hotels): ${process.env.DUFFEL_API_TOKEN ? "Configured" : "Not set"}\n`);
 });
