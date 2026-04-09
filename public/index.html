@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SANO — AI Agent</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- Onboarding Overlay -->
+  <div id="onboarding" class="onboarding">
+    <div class="onboarding-content">
+      <div class="onboarding-logo">
+        <div class="logo-icon">S</div>
+        <h1>SANO</h1>
+        <p class="tagline">Shop, trade, and execute — all from chat.</p>
+      </div>
+
+      <div class="onboarding-steps">
+        <div class="step">
+          <div class="step-num">1</div>
+          <div class="step-text">
+            <strong>Create your agent</strong>
+            <span>Sign up or connect your Solana wallet. SANO creates an embedded wallet funded with USDC.</span>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num">2</div>
+          <div class="step-text">
+            <strong>Tell it what you want</strong>
+            <span>"Find me AirPods under $200", "Swap 50 USDC to SOL", "Book a flight to NYC"</span>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num">3</div>
+          <div class="step-text">
+            <strong>SANO executes</strong>
+            <span>It searches, compares, and pays with USDC from your wallet. Flights, tokens, stocks, DeFi — all of it.</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="onboarding-actions">
+        <button id="btn-connect-wallet" class="btn btn-primary btn-lg">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="6" width="20" height="14" rx="2"/><path d="M2 10h20"/><path d="M16 14h2"/></svg>
+          Connect Wallet
+        </button>
+        <button id="btn-email-signup" class="btn btn-secondary btn-lg">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M22 4 12 13 2 4"/></svg>
+          Sign up with Email
+        </button>
+      </div>
+
+      <div class="onboarding-tools">
+        <p>30+ tools under the hood</p>
+        <div class="tool-pills">
+          <span>Amazon</span><span>Shopify</span><span>Jupiter</span><span>Stocks</span>
+          <span>Flights</span><span>Visa Cards</span><span>DeFi</span><span>Prediction Markets</span>
+          <span>Payments</span><span>Credit</span><span>Staking</span><span>+19 more</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main App -->
+  <div id="app" class="app hidden">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="logo-mark">S</div>
+        <span class="logo-text">SANO</span>
+      </div>
+
+      <button id="new-chat-btn" class="btn btn-ghost sidebar-btn">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+        New Chat
+      </button>
+
+      <div class="sidebar-section">
+        <div class="sidebar-label">Quick Actions</div>
+        <button class="quick-action" data-prompt="What's my wallet balance?">💰 Wallet Balance</button>
+        <button class="quick-action" data-prompt="Show my portfolio summary">📊 Portfolio</button>
+        <button class="quick-action" data-prompt="Search for the best yield opportunities">🌱 Find Yield</button>
+        <button class="quick-action" data-prompt="Show my recent transactions">📜 Transactions</button>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-label">Tools</div>
+        <div class="tool-categories" id="tool-categories"></div>
+      </div>
+
+      <div class="sidebar-footer">
+        <div class="wallet-info" id="wallet-info">
+          <div class="wallet-dot"></div>
+          <div class="wallet-details">
+            <span class="wallet-addr">SANO...demo</span>
+            <span class="wallet-bal">$4,250 USDC</span>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Chat Area -->
+    <main class="chat-main">
+      <div class="chat-header">
+        <button id="sidebar-toggle" class="btn btn-icon mobile-only">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
+        </button>
+        <div class="chat-header-title">
+          <h2>SANO Agent</h2>
+          <span class="status-badge">
+            <span class="status-dot"></span>
+            Online
+          </span>
+        </div>
+        <div class="chat-header-actions">
+          <button id="tools-btn" class="btn btn-ghost btn-sm">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+            Tools
+          </button>
+        </div>
+      </div>
+
+      <div class="chat-messages" id="chat-messages">
+        <div class="welcome-msg">
+          <div class="welcome-icon">S</div>
+          <h3>Hey, I'm SANO</h3>
+          <p>Your AI agent for shopping, trading, and executing on Solana. What can I do for you?</p>
+          <div class="suggestion-grid">
+            <button class="suggestion" data-prompt="Find me the cheapest wireless earbuds on Amazon">
+              <span class="suggestion-icon">🛒</span>
+              <span class="suggestion-text">Find me the cheapest wireless earbuds on Amazon</span>
+            </button>
+            <button class="suggestion" data-prompt="Swap 50 USDC to SOL">
+              <span class="suggestion-icon">🔄</span>
+              <span class="suggestion-text">Swap 50 USDC to SOL</span>
+            </button>
+            <button class="suggestion" data-prompt="Bet $10 on BTC above 100k by end of year">
+              <span class="suggestion-icon">📊</span>
+              <span class="suggestion-text">Bet $10 on BTC above 100k</span>
+            </button>
+            <button class="suggestion" data-prompt="Search flights from LAX to NYC next Friday">
+              <span class="suggestion-icon">✈️</span>
+              <span class="suggestion-text">Search flights LAX → NYC</span>
+            </button>
+            <button class="suggestion" data-prompt="Create a virtual Visa card with $200 for online shopping">
+              <span class="suggestion-icon">💳</span>
+              <span class="suggestion-text">Create a virtual Visa card</span>
+            </button>
+            <button class="suggestion" data-prompt="Stake 10 SOL for the best yield">
+              <span class="suggestion-icon">🌱</span>
+              <span class="suggestion-text">Stake 10 SOL for best yield</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="chat-input-area">
+        <div class="input-container">
+          <textarea id="chat-input" placeholder="Ask SANO anything — shop, swap, trade, book..." rows="1" autofocus></textarea>
+          <button id="send-btn" class="send-btn" disabled>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M22 2 11 13"/><path d="M22 2 15 22 11 13 2 9z"/></svg>
+          </button>
+        </div>
+        <div class="input-footer">
+          <span>Powered by SANO on Solana</span>
+          <span>All transactions in USDC</span>
+        </div>
+      </div>
+    </main>
+
+    <!-- Tools Panel (slide-out) -->
+    <div class="tools-panel hidden" id="tools-panel">
+      <div class="tools-panel-header">
+        <h3>Available Tools</h3>
+        <button id="close-tools" class="btn btn-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div class="tools-panel-body" id="tools-list"></div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

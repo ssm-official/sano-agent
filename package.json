@@ -1,0 +1,16 @@
+{
+  "name": "sano-agent",
+  "version": "1.0.0",
+  "description": "SANO — AI agent that shops, trades, and executes on Solana from a chat interface",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "express": "^4.21.0",
+    "dotenv": "^16.4.5",
+    "uuid": "^9.0.1"
+  }
+}
