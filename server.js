@@ -195,18 +195,39 @@ app.post("/api/auth/verify", async (req, res) => {
       const sbxResult = await sandbox.createUserSandbox(key);
       user = {
         email: key,
-        wallet: sbxResult.wallet,        // public key (server can know this)
-        sandbox_id: sbxResult.sandboxId,  // pointer to user's isolated env
+        wallet: sbxResult.wallet,
+        sandbox_id: sbxResult.sandboxId,
         created: new Date().toISOString(),
         agent_name: "SANO"
       };
-      // Note: walletSecret is NOT stored on the server. It lives only in the sandbox.
       users.set(key, user);
       store.saveUsers(users);
       console.log(`  [USER] New user: ${key} -> sandbox ${user.sandbox_id} -> wallet ${user.wallet}`);
     } catch (e) {
       console.error(`  [USER] Failed to create sandbox for ${key}:`, e.message);
       return res.json({ error: "Couldn't set up your account. Try again in a moment." });
+    }
+  } else if (!user.sandbox_id) {
+    // Existing user from before sandboxes — migrate them now
+    try {
+      console.log(`  [MIGRATE] Upgrading ${key} to sandbox-backed account`);
+      const sbxResult = await sandbox.createUserSandbox(key);
+      user.sandbox_id = sbxResult.sandboxId;
+      user.wallet = sbxResult.wallet; // new wallet
+      user.walletSecret = null;       // no longer stored on server
+      user.migrated_at = new Date().toISOString();
+      users.set(key, user);
+      store.saveUsers(users);
+
+      // Copy any existing memory from legacy storage into the sandbox
+      const legacyMemory = store.loadMemory(key);
+      if (legacyMemory) {
+        try { await sandbox.writeMemory(user.sandbox_id, legacyMemory); } catch (e) {}
+      }
+      console.log(`  [MIGRATE] ${key} -> sandbox ${user.sandbox_id} -> wallet ${user.wallet}`);
+    } catch (e) {
+      console.error(`  [MIGRATE] Failed for ${key}:`, e.message);
+      // Don't block login — they can use legacy mode
     }
   }
 
