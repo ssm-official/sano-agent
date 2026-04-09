@@ -322,9 +322,25 @@ app.post("/api/chat", async (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
 
-  let systemPrompt = SYSTEM_PROMPT;
+  const now = new Date();
+  const days = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+  const todayStr = now.toISOString().split("T")[0]; // YYYY-MM-DD
+  const dayName = days[now.getDay()];
+
+  // Calculate next Friday, next Monday, etc. for relative date context
+  const nextFriday = new Date(now);
+  nextFriday.setDate(now.getDate() + ((5 - now.getDay() + 7) % 7 || 7));
+  const nextMonday = new Date(now);
+  nextMonday.setDate(now.getDate() + ((1 - now.getDay() + 7) % 7 || 7));
+
+  let systemPrompt = SYSTEM_PROMPT + `\n\nCONTEXT:
+- Today is ${dayName}, ${todayStr}
+- Next Friday is ${nextFriday.toISOString().split("T")[0]}
+- Next Monday is ${nextMonday.toISOString().split("T")[0]}
+- When the user says "next Friday", "this weekend", "tomorrow", etc., calculate the correct date yourself. NEVER ask the user to provide a date in YYYY-MM-DD format. Just figure it out.`;
+
   if (walletAddress) {
-    systemPrompt += `\n\nUser's account address: ${walletAddress}`;
+    systemPrompt += `\nUser's account address: ${walletAddress}`;
   }
 
   try {
