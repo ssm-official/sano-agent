@@ -813,21 +813,22 @@ const EXECUTORS = {
       }
 
       // 4. Pay the invoice with USDC from user's wallet
-      const paymentInfo = buyResult.payment_info || buyResult;
+      // Bitrefill CLI wraps the actual response in a 'response' field
+      const invoice = buyResult.response || buyResult;
+      const paymentInfo = invoice.payment_info || invoice;
       const paymentAddress = paymentInfo.address || paymentInfo.payTo;
-      // Use the actual USDC amount from the invoice (Bitrefill tells us exact)
-      // Fall back to payment_price_usd from the package (in USD)
       const paymentAmount = parseFloat(
-        paymentInfo.amount ||
         paymentInfo.altcoinPrice ||
+        paymentInfo.amount ||
         paymentInfo.expected_amount ||
         pkg.payment_price_usd ||
         0
       );
-      const invoiceId = buyResult.invoice_id || buyResult.id;
+      const invoiceId = invoice.invoice_id || invoice.id;
 
       if (!paymentAddress || !paymentAmount) {
-        return { error: "Couldn't get payment details from Bitrefill." };
+        console.log("  [SHOP] Bad invoice response:", JSON.stringify(buyResult).slice(0, 500));
+        return { error: `Couldn't get payment details from Bitrefill. Address: ${paymentAddress}, amount: ${paymentAmount}` };
       }
 
       const recipientPubkey = new PublicKey(paymentAddress);
@@ -856,12 +857,13 @@ const EXECUTORS = {
       for (let i = 0; i < 30; i++) {
         await new Promise(r => setTimeout(r, 2000));
         try {
-          const invoice = await bitrefill.getInvoice({ invoiceId, includeRedemption: true });
-          const orders = invoice.orders || [];
+          const inv = await bitrefill.getInvoice({ invoiceId, includeRedemption: true });
+          const data = inv.response || inv;
+          const orders = data.orders || [];
           for (const o of orders) {
-            const ri = o.redemption_info || o.redemptionInfo || {};
-            if (ri.code || ri.link || ri.url) {
-              redemptionCode = ri.code || null;
+            const ri = o.redemption_info || o.redemptionInfo || o;
+            if (ri.code || ri.link || ri.url || ri.pin) {
+              redemptionCode = ri.code || ri.pin || null;
               redemptionLink = ri.link || ri.url || null;
               break;
             }
