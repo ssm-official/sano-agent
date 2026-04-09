@@ -11,6 +11,7 @@ const { getAssociatedTokenAddress, createTransferInstruction, TOKEN_PROGRAM_ID }
 
 const SOLANA_RPC = process.env.SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com";
 const connection = new Connection(SOLANA_RPC, "confirmed");
+const bitrefill = require("./bitrefill-client");
 
 const MINTS = {
   SOL: "So11111111111111111111111111111111111111112",
@@ -91,12 +92,12 @@ async function findTokenBySymbol(symbol) {
   return null;
 }
 
-// ─── Main executor — now receives keypair for signing ───
-async function executeTool(name, input, walletAddress, keypair) {
+// ─── Main executor — receives keypair for signing + context (userEmail, store) ───
+async function executeTool(name, input, walletAddress, keypair, context = {}) {
   try {
     const executor = EXECUTORS[name];
     if (!executor) return { error: `Unknown tool: ${name}` };
-    return await executor(input, walletAddress, keypair);
+    return await executor(input, walletAddress, keypair, context);
   } catch (err) {
     console.error(`Tool ${name} error:`, err.message);
     return { error: err.message };
@@ -640,106 +641,69 @@ const EXECUTORS = {
     };
   },
 
-  // ─── BUY PRODUCT — Autonomous purchase ───
-  // Routes to gift card via Bitrefill (works for 600+ retailers globally including Tokopedia, Shopee, Lazada)
+  // ─── BUY PRODUCT — Autonomous purchase via official Bitrefill CLI ───
+  // Searches for the merchant, picks the best gift card, charges USDC from user's wallet
   buy_product: async (input, walletAddress, keypair) => {
     if (!walletAddress) return { error: "Please sign in to buy things." };
     if (!keypair) return { error: "Account not ready. Please sign out and back in." };
-
-    // Just delegate to the gift card flow with the merchant
-    const result = await EXECUTORS.buy_gift_card({
-      merchant: input.merchant,
-      amount_usd: input.amount_usd,
-      country: input.country || "US"
-    }, walletAddress, keypair);
-
-    // Wrap with product context
-    if (result.status === "completed") {
-      return {
-        ...result,
-        product_name: input.product_name,
-        product_url: input.product_url || null,
-        message: `Purchased a $${input.amount_usd} ${input.merchant} gift card for "${input.product_name}". Use the code below at checkout on ${input.merchant}:`,
-      };
-    }
-    return { ...result, product_name: input.product_name };
-  },
-
-  // ─── Buy Gift Card with USDC ───
-  buy_gift_card: async (input, walletAddress, keypair) => {
-    if (!walletAddress) return { error: "Please sign in to buy gift cards." };
-
-    const bitrefillKey = process.env.BITREFILL_API_KEY;
-    const bitrefillSecret = process.env.BITREFILL_API_SECRET;
-
-    if (!bitrefillKey || !bitrefillSecret) {
-      return {
-        status: "coming_soon",
-        message: `Gift card purchases are not set up yet. To enable, the admin needs to add Bitrefill API credentials.`,
-        merchant: input.merchant,
-        amount_usd: input.amount_usd
-      };
+    if (!process.env.BITREFILL_API_KEY) {
+      return { error: "Shopping is not configured yet. Coming soon." };
     }
 
     try {
-      // Search for the merchant's gift card product
-      const auth = "Basic " + Buffer.from(`${bitrefillKey}:${bitrefillSecret}`).toString("base64");
-
-      const productSearch = await fetch(`https://api.bitrefill.com/v2/products?query=${encodeURIComponent(input.merchant)}&country=${input.country || "US"}&category=gift_cards&limit=5`, {
-        headers: { "Authorization": auth }
-      });
-      const productData = await productSearch.json();
-
-      const products = productData.data || productData.products || [];
-      if (products.length === 0) {
-        return { error: `Couldn't find a gift card for ${input.merchant}. Try searching for available merchants first.` };
-      }
-
-      // Find best match (exact name match preferred)
-      const merchantLower = input.merchant.toLowerCase();
-      const product = products.find(p => p.name?.toLowerCase().includes(merchantLower)) || products[0];
-
-      // Check if amount is valid
-      const minAmount = parseFloat(product.range?.min || product.value?.min || 5);
-      const maxAmount = parseFloat(product.range?.max || product.value?.max || 500);
-
-      if (input.amount_usd < minAmount || input.amount_usd > maxAmount) {
-        return {
-          error: `${product.name} gift cards must be between $${minAmount} and $${maxAmount}.`,
-          available_amounts: product.values || product.denominations
-        };
-      }
-
-      // Create the order
-      const orderRes = await fetch("https://api.bitrefill.com/v2/orders", {
-        method: "POST",
-        headers: { "Authorization": auth, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          product_id: product.id,
-          value: input.amount_usd.toString(),
-          quantity: 1,
-          payment_method: "usdc_solana"
-        })
+      // 1. Search for the merchant on Bitrefill
+      const country = (input.country || "US").toUpperCase();
+      const search = await bitrefill.searchProducts({
+        query: input.merchant,
+        country,
+        productType: "giftcard"
       });
 
-      const orderData = await orderRes.json();
+      const product = bitrefill.pickBestProduct(search, input.merchant);
+      if (!product) {
+        return { error: `Couldn't find ${input.merchant} on Bitrefill. Try a different store.` };
+      }
 
-      if (orderData.error) return { error: orderData.error.message || "Failed to create gift card order." };
+      // 2. Get product details to find the right package
+      const details = await bitrefill.getProductDetails({
+        productId: product.id || product.product_id || product.slug,
+        currency: "USD"
+      });
 
-      const order = orderData.data || orderData;
-      const paymentAddress = order.payment?.address;
-      const paymentAmount = order.payment?.amount;
+      const pkg = bitrefill.pickBestPackage(details, input.amount_usd);
+      if (!pkg) {
+        return { error: `${product.name} doesn't have available packages right now.` };
+      }
 
-      if (!paymentAddress) {
+      // 3. Buy with USDC on Solana
+      const buyResult = await bitrefill.buyProducts({
+        cartItems: [{
+          product_id: product.id || product.product_id || product.slug,
+          package_id: pkg.package_value
+        }],
+        paymentMethod: "usdc_solana",
+        returnPaymentLink: false
+      });
+
+      if (buyResult.error) {
+        return { error: buyResult.error };
+      }
+
+      // 4. Pay the invoice with USDC from user's wallet
+      const paymentInfo = buyResult.payment_info || buyResult;
+      const paymentAddress = paymentInfo.address;
+      const paymentAmount = parseFloat(paymentInfo.amount || paymentInfo.altcoinPrice || pkg.package_value);
+      const invoiceId = buyResult.invoice_id || buyResult.id;
+
+      if (!paymentAddress || !paymentAmount) {
         return { error: "Couldn't get payment details from Bitrefill." };
       }
 
-      // Pay the order with USDC from user's wallet
       const recipientPubkey = new PublicKey(paymentAddress);
       const usdcMint = new PublicKey(MINTS.USDC);
       const fromATA = await getAssociatedTokenAddress(usdcMint, keypair.publicKey);
       const toATA = await getAssociatedTokenAddress(usdcMint, recipientPubkey);
-      const rawAmount = Math.round(parseFloat(paymentAmount) * (10 ** 6));
+      const rawAmount = Math.round(paymentAmount * (10 ** 6));
 
       const tx = new Transaction();
       const toAccount = await connection.getAccountInfo(toATA);
@@ -755,92 +719,115 @@ const EXECUTORS = {
       const signature = await connection.sendRawTransaction(tx.serialize());
       await connection.confirmTransaction(signature, "confirmed");
 
-      // Wait for Bitrefill to confirm and deliver the gift card
-      // Poll for redemption code
-      let redemption = null;
+      // 5. Poll Bitrefill for the redemption code
+      let redemptionCode = null;
+      let redemptionLink = null;
       for (let i = 0; i < 30; i++) {
         await new Promise(r => setTimeout(r, 2000));
-        const statusRes = await fetch(`https://api.bitrefill.com/v2/orders/${order.id}`, {
-          headers: { "Authorization": auth }
-        });
-        const statusData = await statusRes.json();
-        const o = statusData.data || statusData;
-        if (o.redemption_info?.code || o.code) {
-          redemption = o.redemption_info?.code || o.code;
-          break;
-        }
-        if (o.status === "delivered" || o.status === "completed") {
-          redemption = o.redemption_info?.code || o.code;
-          break;
-        }
+        try {
+          const invoice = await bitrefill.getInvoice({ invoiceId, includeRedemption: true });
+          const orders = invoice.orders || [];
+          for (const o of orders) {
+            const ri = o.redemption_info || o.redemptionInfo || {};
+            if (ri.code || ri.link || ri.url) {
+              redemptionCode = ri.code || null;
+              redemptionLink = ri.link || ri.url || null;
+              break;
+            }
+          }
+          if (redemptionCode || redemptionLink) break;
+        } catch (e) { /* keep polling */ }
       }
 
-      console.log(`  [GIFT] ${input.merchant} $${input.amount_usd} | tx: ${signature}`);
+      console.log(`  [SHOP] ${input.merchant} $${input.amount_usd} | tx: ${signature}`);
 
       return {
         ui_type: "gift_card_receipt",
         status: "completed",
         merchant: product.name,
+        product_name: input.product_name,
         amount_usd: input.amount_usd,
-        redemption_code: redemption || "Pending — check your email or order history",
-        order_id: order.id,
+        package_value: pkg.package_value,
+        redemption_code: redemptionCode || (redemptionLink ? `Click link to redeem` : "Delivering... check your activity"),
+        redemption_link: redemptionLink,
+        invoice_id: invoiceId,
         signature,
         explorer: `https://solscan.io/tx/${signature}`,
-        message: `Bought a $${input.amount_usd} ${product.name} gift card. ${redemption ? `Code: ${redemption}` : "Code will be delivered shortly."}`,
-        instructions: `Go to ${input.merchant.toLowerCase()}.com and use this code at checkout.`
+        message: `Bought a ${pkg.package_value} ${product.name} ${pkg.package_value === input.amount_usd ? "" : "(closest available)"} for "${input.product_name}".`,
       };
     } catch (e) {
-      console.error("  [GIFT] Error:", e.message);
-      return { error: `Gift card purchase failed: ${e.message}` };
+      console.error("  [SHOP] Error:", e.message);
+      return { error: `Purchase failed: ${e.message}` };
     }
   },
 
-  list_gift_card_merchants: async (input) => {
-    const bitrefillKey = process.env.BITREFILL_API_KEY;
-    const bitrefillSecret = process.env.BITREFILL_API_SECRET;
+  // Buy a standalone gift card (no specific product context)
+  buy_gift_card: async (input, walletAddress, keypair) => {
+    return await EXECUTORS.buy_product({
+      product_name: `${input.merchant} gift card`,
+      merchant: input.merchant,
+      amount_usd: input.amount_usd,
+      country: input.country
+    }, walletAddress, keypair);
+  },
 
-    if (!bitrefillKey || !bitrefillSecret) {
-      // Return a curated list of popular merchants
+  list_gift_card_merchants: async (input) => {
+    if (!process.env.BITREFILL_API_KEY) {
       return {
         merchants: [
           "Amazon", "Walmart", "Target", "Best Buy", "Home Depot",
           "Apple", "Google Play", "Steam", "PlayStation", "Xbox",
-          "Nike", "Adidas", "Sephora", "Ulta",
-          "Starbucks", "DoorDash", "Uber Eats", "Instacart",
-          "Airbnb", "Hotels.com", "Delta", "Southwest",
-          "Visa", "Mastercard"
+          "Nike", "Adidas", "Sephora", "Ulta", "Tokopedia", "Shopee", "Lazada"
         ],
-        note: "Gift card purchases are not enabled yet. These are common merchants that will be available."
+        note: "Shopping not configured yet."
       };
     }
-
     try {
-      const auth = "Basic " + Buffer.from(`${bitrefillKey}:${bitrefillSecret}`).toString("base64");
-      const params = new URLSearchParams({
-        country: input.country || "US",
-        category: "gift_cards",
-        limit: "30"
+      const result = await bitrefill.searchProducts({
+        query: input.category || "*",
+        country: (input.country || "US").toUpperCase(),
+        productType: "giftcard",
+        perPage: 30
       });
-      if (input.category) params.append("query", input.category);
-
-      const res = await fetch(`https://api.bitrefill.com/v2/products?${params}`, {
-        headers: { "Authorization": auth }
-      });
-      const data = await res.json();
-      const products = data.data || data.products || [];
-
+      const products = result.products || result.results || [];
       return {
         merchants: products.map(p => ({
           name: p.name,
-          min: p.range?.min,
-          max: p.range?.max,
-          country: p.country
+          country: p.country,
+          categories: p.categories
         })),
         count: products.length
       };
     } catch (e) {
       return { error: "Couldn't load merchants right now." };
     }
+  },
+
+  // ─── MEMORY: Remember and forget ───
+  remember: async (input, walletAddress, keypair, context) => {
+    if (!context?.userEmail || !context?.store) {
+      return { error: "Memory not available — sign in first." };
+    }
+    const section = input.section || "Notes";
+    const updated = context.store.rememberFact(context.userEmail, input.fact, section);
+    return {
+      status: "saved",
+      fact: input.fact,
+      section,
+      message: `Got it. I'll remember that.`
+    };
+  },
+
+  forget: async (input, walletAddress, keypair, context) => {
+    if (!context?.userEmail || !context?.store) {
+      return { error: "Memory not available — sign in first." };
+    }
+    context.store.forgetFact(context.userEmail, input.query);
+    return {
+      status: "forgotten",
+      query: input.query,
+      message: `Removed entries matching "${input.query}".`
+    };
   },
 
   // ─── DeFi (Savings/Interest) ───

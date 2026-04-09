@@ -10,6 +10,7 @@ const { v4: uuidv4 } = require("uuid");
 const fetch = require("node-fetch");
 const { Connection, PublicKey, LAMPORTS_PER_SOL, Keypair } = require("@solana/web3.js");
 const bs58 = require("bs58").default || require("bs58");
+const store = require("./agent-store");
 
 const app = express();
 app.set("trust proxy", 1); // Trust Railway's reverse proxy
@@ -66,11 +67,11 @@ function setCachedPrice(key, data) {
   }
 }
 
-// ─── Auth: Email + OTP (self-contained, no Privy dependency) ───
-// In production: replace with Privy server SDK or add Redis for OTP storage
-const pendingAuth = new Map();  // email -> { code, expires, attempts }
-const users = new Map();        // email -> { wallet, walletSecret, created }
-const sessions = new Map();     // sessionId -> { messages[] }
+// ─── Auth: Email + OTP ───
+const pendingAuth = new Map();  // email -> { code, expires, attempts } (in-memory, OTPs are short-lived)
+const users = store.loadUsers(); // email -> { wallet, walletSecret, created, usage } (file-backed)
+const sessions = new Map();     // sessionId -> { messages[] } (in-memory, regenerated)
+console.log(`  [STORE] Loaded ${users.size} existing users`);
 
 // Generate OTP
 function generateOTP() {
@@ -188,15 +189,28 @@ app.post("/api/auth/verify", async (req, res) => {
   // Get or create user
   let user = users.get(key);
   if (!user) {
-    // Create embedded Solana wallet
+    // Create embedded Solana wallet for this new user
     const keypair = Keypair.generate();
     user = {
       email: key,
       wallet: keypair.publicKey.toBase58(),
       walletSecret: bs58.encode(keypair.secretKey), // encrypted in production
-      created: new Date().toISOString()
+      created: new Date().toISOString(),
+      agent_name: "SANO"
     };
     users.set(key, user);
+    store.saveUsers(users);
+
+    // Initialize the agent's memory file with a profile section
+    const initialMemory = `# Memory for ${key}
+
+## Profile
+- email: ${key}
+- account created: ${user.created}
+
+## Notes
+`;
+    store.saveMemory(key, initialMemory);
     console.log(`  [USER] New user: ${key} -> wallet ${user.wallet}`);
   }
 
@@ -310,6 +324,13 @@ CRITICAL UI RULES:
 - When you call stock_trade or buy_product, the frontend shows a receipt card. Don't repeat the details — just confirm briefly.
 - Keep your text replies SHORT. The UI does the heavy lifting.
 
+MEMORY — IMPORTANT:
+- You have persistent memory about each user across all conversations
+- Whenever you learn something useful (their name, address, sizes, preferences, recurring needs), call the remember tool to save it
+- If they tell you their address, remember it. If they mention a brand they love, remember it. If they say "I always want X under $Y", remember it.
+- Use what you remember to skip questions ("I see your address is on file, want me to ship there?") and personalize ("Based on what you've told me before...")
+- If something becomes outdated, call forget
+
 If the user has insufficient USDC, tell them to add funds first.
 
 HOW TO BEHAVE:
@@ -337,6 +358,12 @@ IMPORTANT:
 app.post("/api/chat", async (req, res) => {
   const { message, sessionId, walletAddress } = req.body;
   const sid = sessionId || uuidv4();
+
+  // Look up the user by wallet address (so we have their email for memory)
+  let userEmail = null;
+  for (const [email, u] of users) {
+    if (u.wallet === walletAddress) { userEmail = email; break; }
+  }
 
   if (!sessions.has(sid)) sessions.set(sid, []);
   const history = sessions.get(sid);
@@ -368,6 +395,21 @@ app.post("/api/chat", async (req, res) => {
 
   if (walletAddress) {
     systemPrompt += `\nUser's account address: ${walletAddress}`;
+  }
+
+  // Inject the user's memory
+  if (userEmail) {
+    const memory = store.loadMemory(userEmail);
+    if (memory) {
+      systemPrompt += `\n\n=== YOUR MEMORY ABOUT THIS USER ===
+This is what you remember about them from previous conversations. Use it to personalize your responses, skip questions you already know the answer to, and refer to past activity when relevant.
+
+${memory}
+
+=== END MEMORY ===
+
+When you learn something new about the user that would be useful to remember (their name, address, preferences, sizes, important dates, recurring needs), call the remember tool to save it. When something becomes outdated, use forget. Keep memory clean and useful.`;
+    }
   }
 
   try {
@@ -420,7 +462,14 @@ app.post("/api/chat", async (req, res) => {
               }
             }
           }
-          const toolResult = await executeTool(currentToolUse.name, toolInput, walletAddress, userKeypair);
+          // Pass user context (email, store) so memory and Bitrefill tools can work
+          const toolResult = await executeTool(
+            currentToolUse.name,
+            toolInput,
+            walletAddress,
+            userKeypair,
+            { userEmail, store }
+          );
 
           res.write(`data: ${JSON.stringify({
             type: "tool_result", tool: currentToolUse.name, input: toolInput, result: toolResult

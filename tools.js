@@ -196,6 +196,31 @@ const TOOLS = [
     }
   },
 
+  // ─── MEMORY (per-user persistent agent memory) ───
+  {
+    name: "remember",
+    description: "Save a fact about the user to your persistent memory. Use this whenever you learn something useful — their name, shipping address, preferences, sizes, important dates, recurring needs, things they've bought, anything that would help you serve them better in future conversations. Be specific and concise.",
+    input_schema: {
+      type: "object",
+      properties: {
+        fact: { type: "string", description: "The fact to remember (e.g. 'shipping address: 123 Main St, San Francisco, CA 94102', 'shoe size: 10', 'prefers Sony electronics over Apple', 'spending limit: $200 per purchase without confirmation')" },
+        section: { type: "string", description: "Section to save under: 'Profile' for personal info (name, address, phone), 'Preferences' for likes/dislikes, 'Notes' for general notes and history.", default: "Notes" }
+      },
+      required: ["fact"]
+    }
+  },
+  {
+    name: "forget",
+    description: "Remove a fact from memory. Use when info becomes outdated (old address, old preference). Provide a search term that uniquely identifies the entry.",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Text to find and remove from memory" }
+      },
+      required: ["query"]
+    }
+  },
+
   // ─── DeFi ───
   {
     name: "defi_stake",
@@ -341,6 +366,7 @@ const TOOL_CATEGORIES = {
   "Payments": ["send_payment", "request_payment"],
   "Earn": ["defi_stake", "defi_lend", "defi_yield_search"],
   "Account": ["wallet_balance", "portfolio_summary", "transaction_history"],
+  "Memory": ["remember", "forget"],
   "Alerts": ["price_alert"]
 };
 
