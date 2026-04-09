@@ -469,7 +469,7 @@ async function send(text) {
         "Content-Type": "application/json",
         ...(authToken ? { "Authorization": `Bearer ${authToken}` } : {})
       },
-      body: JSON.stringify({ message: text, sessionId, walletAddress })
+      body: JSON.stringify({ message: text, sessionId, walletAddress, userEmail })
     });
 
     const reader = res.body.getReader();

@@ -356,13 +356,36 @@ IMPORTANT:
 - You are a REAL agent that executes transactions. Swaps and payments happen for real on the Solana blockchain. Treat them seriously — always confirm amounts with the user before executing`;
 
 app.post("/api/chat", async (req, res) => {
-  const { message, sessionId, walletAddress } = req.body;
+  const { message, sessionId, walletAddress, userEmail: clientEmail } = req.body;
   const sid = sessionId || uuidv4();
 
-  // Look up the user by wallet address (so we have their email for memory)
-  let userEmail = null;
-  for (const [email, u] of users) {
-    if (u.wallet === walletAddress) { userEmail = email; break; }
+  // Resolve userEmail: prefer the email sent by client, fall back to wallet lookup
+  let userEmail = clientEmail?.toLowerCase() || null;
+
+  if (!userEmail && walletAddress) {
+    for (const [email, u] of users) {
+      if (u.wallet === walletAddress) { userEmail = email; break; }
+    }
+  }
+
+  // Auto-recover: if we have an email but no user record (data was wiped),
+  // restore them so memory works. We can't recover the wallet keypair,
+  // but we can at least keep memory functional.
+  if (userEmail && !users.has(userEmail) && walletAddress) {
+    console.log(`  [RECOVERY] Restoring user record for ${userEmail} (wallet from client)`);
+    users.set(userEmail, {
+      email: userEmail,
+      wallet: walletAddress,
+      walletSecret: null, // can't recover, signing will fail until re-auth
+      created: new Date().toISOString(),
+      recovered: true
+    });
+    store.saveUsers(users);
+
+    // Initialize empty memory if missing
+    if (!store.loadMemory(userEmail)) {
+      store.saveMemory(userEmail, `# Memory for ${userEmail}\n\n## Profile\n- email: ${userEmail}\n\n## Notes\n`);
+    }
   }
 
   if (!sessions.has(sid)) sessions.set(sid, []);
