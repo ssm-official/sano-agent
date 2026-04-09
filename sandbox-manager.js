@@ -26,14 +26,14 @@ async function createUserSandbox(email) {
 
   console.log(`  [SBX] Creating desktop sandbox for ${email}...`);
   const sbx = await Sandbox.create({
-    timeoutMs: 10 * 60 * 1000, // 10 min max running
-    resolution: [1280, 800],   // browser-friendly resolution
+    timeoutMs: 10 * 60 * 1000,
+    resolution: [1280, 800],
     dpi: 96
   });
   const sandboxId = sbx.sandboxId;
   console.log(`  [SBX] Created ${sandboxId} for ${email}`);
 
-  // Generate the user's wallet (server-side, then write to sandbox)
+  // Generate the wallet keypair (fast, server-side)
   const keypair = Keypair.generate();
   const walletData = {
     public_key: keypair.publicKey.toBase58(),
@@ -41,29 +41,20 @@ async function createUserSandbox(email) {
     created: new Date().toISOString()
   };
 
-  await sbx.files.write(PATHS.wallet, JSON.stringify(walletData, null, 2));
+  // Write essential files in parallel
+  await Promise.all([
+    sbx.files.write(PATHS.wallet, JSON.stringify(walletData, null, 2)),
+    sbx.files.write(PATHS.memory, `# Memory for ${email}\n\n## Profile\n- email: ${email}\n- account created: ${new Date().toISOString()}\n\n## Notes\n`),
+    sbx.files.write(PATHS.state, JSON.stringify({ created: new Date().toISOString() }))
+  ]);
 
-  const initialMemory = `# Memory for ${email}
+  // Cache the live sandbox so subsequent requests don't need to reconnect
+  liveSandboxes.set(sandboxId, { sbx, lastUsed: Date.now() });
 
-## Profile
-- email: ${email}
-- account created: ${new Date().toISOString()}
+  console.log(`  [SBX] Initialized ${sandboxId}`);
 
-## Notes
-`;
-  await sbx.files.write(PATHS.memory, initialMemory);
-  await sbx.files.write(PATHS.state, JSON.stringify({ created: new Date().toISOString() }));
-
-  // Start the streaming server so we can show the user their agent's desktop
-  try {
-    await sbx.stream.start({ requireAuth: true });
-  } catch (e) {
-    console.log(`  [SBX] Stream start warning:`, e.message);
-  }
-
-  // Pause to save resources
-  await sbx.pause();
-  console.log(`  [SBX] Initialized and paused ${sandboxId}`);
+  // NOTE: We don't pause or start streaming here. The cleanup timer will pause
+  // it after idle. Streaming starts lazily on first computer use action.
 
   return {
     sandboxId,

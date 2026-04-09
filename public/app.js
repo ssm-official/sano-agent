@@ -80,15 +80,20 @@ async function verifyCode() {
   }
 
   $("#auth-verify").disabled = true;
-  $("#auth-verify").textContent = "Verifying...";
+  $("#auth-verify").textContent = "Setting up your agent...";
   $("#auth-error").classList.add("hidden");
 
   try {
+    // Sandbox creation can take 30-60 seconds — be patient
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 120000);
     const res = await fetch("/api/auth/verify", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, code })
+      body: JSON.stringify({ email, code }),
+      signal: controller.signal
     });
+    clearTimeout(timeoutId);
     const data = await res.json();
 
     if (data.error) {

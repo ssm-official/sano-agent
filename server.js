@@ -157,8 +157,12 @@ app.post("/api/auth/start", async (req, res) => {
   res.json({ ok: true, message: "Code sent." });
 });
 
-// Auth: Verify OTP
+// Auth: Verify OTP — extend response timeout because sandbox creation can take 20-40s
 app.post("/api/auth/verify", async (req, res) => {
+  // Disable Node's default response timeout for this endpoint
+  req.setTimeout(120000);
+  res.setTimeout(120000);
+
   const { email, code } = req.body;
   const key = email?.toLowerCase();
 
