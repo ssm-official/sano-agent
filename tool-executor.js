@@ -402,13 +402,19 @@ const EXECUTORS = {
     const solBalance = await connection.getBalance(pubkey);
     const solAmount = solBalance / LAMPORTS_PER_SOL;
 
-    const tokenAccounts = await connection.getParsedTokenAccountsByOwner(pubkey, {
-      programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
-    });
+    // Query BOTH the original SPL Token program AND Token-2022 program
+    // (xStocks and many newer tokens use Token-2022)
+    const SPL_TOKEN = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+    const TOKEN_2022 = new PublicKey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
 
-    // Collect all non-zero token holdings
+    const [splAccounts, t22Accounts] = await Promise.all([
+      connection.getParsedTokenAccountsByOwner(pubkey, { programId: SPL_TOKEN }),
+      connection.getParsedTokenAccountsByOwner(pubkey, { programId: TOKEN_2022 })
+    ]);
+
+    // Collect all non-zero token holdings from both programs
     const rawHoldings = [];
-    for (const { account } of tokenAccounts.value) {
+    for (const { account } of [...splAccounts.value, ...t22Accounts.value]) {
       const info = account.data.parsed?.info;
       if (!info) continue;
       const amount = parseFloat(info.tokenAmount?.uiAmountString || "0");
