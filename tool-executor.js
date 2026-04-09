@@ -422,22 +422,35 @@ const EXECUTORS = {
     };
   },
 
-  // ─── Product Search (all stores — Google Shopping) ───
+  // ─── Product Search (Google Shopping — all stores worldwide) ───
   product_search: async (input) => {
     const searchApiKey = process.env.SEARCH_API_KEY;
     if (!searchApiKey) return { error: "Product search is not available right now." };
     try {
-      const params = new URLSearchParams({ api_key: searchApiKey, search_type: "shopping", q: input.query });
+      const params = new URLSearchParams({
+        api_key: searchApiKey,
+        search_type: "shopping",
+        q: input.query,
+        gl: input.country || "us",
+        hl: input.country === "id" ? "id" : "en"
+      });
       const res = await fetch(`https://api.scaleserp.com/search?${params}`);
       const data = await res.json();
       if (data.request_info?.success === false) return { error: `No results for "${input.query}".` };
       const results = data.shopping_results || [];
       if (results.length === 0) return { error: `No products found for "${input.query}".` };
 
-      let mapped = results.slice(0, 10).map(p => ({
-        title: p.title, price: p.price || (p.extracted_price ? "$" + p.extracted_price : "See listing"),
-        extracted_price: p.extracted_price, store: p.source || p.merchant || "Unknown",
-        rating: p.rating, reviews: p.reviews, url: p.link, delivery: p.delivery
+      let mapped = results.slice(0, 8).map(p => ({
+        id: p.id || p.position?.toString() || Math.random().toString(36).slice(2, 8),
+        title: p.title,
+        price: p.price || (p.extracted_price ? "$" + p.extracted_price : "See listing"),
+        extracted_price: p.extracted_price,
+        store: p.source || p.merchant || "Unknown",
+        rating: p.rating,
+        reviews: p.reviews,
+        url: p.link,
+        image: p.image,
+        delivery: p.delivery
       }));
       if (input.max_price) {
         const f = mapped.filter(r => r.extracted_price && r.extracted_price <= input.max_price);
@@ -445,49 +458,14 @@ const EXECUTORS = {
       }
       if (input.sort_by === "price_low") mapped.sort((a, b) => (a.extracted_price || 9999) - (b.extracted_price || 9999));
       if (input.sort_by === "price_high") mapped.sort((a, b) => (b.extracted_price || 0) - (a.extracted_price || 0));
-      return { results: mapped, query: input.query, source: "google_shopping" };
+      return {
+        ui_type: "product_grid",  // tells frontend to render as cards
+        products: mapped,
+        query: input.query,
+        source: "google_shopping"
+      };
     } catch (e) {
       return { error: "Product search failed." };
-    }
-  },
-
-  amazon_search: async (input) => {
-    const searchApiKey = process.env.SEARCH_API_KEY;
-    if (!searchApiKey) return { error: "Amazon search is not available right now." };
-    try {
-      const params = new URLSearchParams({ api_key: searchApiKey, search_type: "shopping", q: `amazon ${input.query}` });
-      const res = await fetch(`https://api.scaleserp.com/search?${params}`);
-      const data = await res.json();
-      const all = data.shopping_results || [];
-      const amazon = all.filter(p => (p.source || "").toLowerCase().includes("amazon"));
-      const results = amazon.length > 0 ? amazon : all;
-      if (results.length === 0) return { error: `No results for "${input.query}".` };
-      return {
-        results: results.slice(0, 8).map(p => ({
-          title: p.title, price: p.price || (p.extracted_price ? "$" + p.extracted_price : "See listing"),
-          rating: p.rating, reviews: p.reviews, url: p.link, store: p.source || "Amazon"
-        })),
-        query: input.query, source: amazon.length > 0 ? "amazon" : "google_shopping"
-      };
-    } catch (e) {
-      return { error: "Amazon search failed." };
-    }
-  },
-
-  shopify_search: async (input) => {
-    if (!input.store_url) return { message: `I need a store URL to search. Example: "search allbirds.com for running shoes"` };
-    try {
-      let url = input.store_url.includes("http") ? input.store_url : `https://${input.store_url}`;
-      const res = await fetch(`${url}/search/suggest.json?q=${encodeURIComponent(input.query)}&resources[type]=product`);
-      const data = await res.json();
-      const products = data.resources?.results?.products || [];
-      if (products.length === 0) return { message: `No results on ${input.store_url}.` };
-      return {
-        results: products.map(p => ({ title: p.title, price: p.price ? "$" + p.price : null, url: `${url}${p.url}` })),
-        store: input.store_url, source: "shopify"
-      };
-    } catch (e) {
-      return { error: `Couldn't search that store.` };
     }
   },
 
@@ -572,6 +550,7 @@ const EXECUTORS = {
       console.log(`  [STOCK] ${input.side.toUpperCase()} ${symbol} for $${amount} | tx: ${signature}`);
 
       return {
+        ui_type: "trade_receipt",
         status: "completed",
         side: input.side, symbol,
         amount_usd: amount,
@@ -659,6 +638,31 @@ const EXECUTORS = {
       message: `Ready to bet $${input.amount_usdc} on "${input.outcome}" for: ${marketTitle}. Polymarket runs on a different network (Polygon), so you'll need to complete the bet on Polymarket directly. Tap the link to go there.`,
       note: "Cross-chain bridging coming soon — for now, click the link to complete your bet on Polymarket."
     };
+  },
+
+  // ─── BUY PRODUCT — Autonomous purchase ───
+  // Routes to gift card via Bitrefill (works for 600+ retailers globally including Tokopedia, Shopee, Lazada)
+  buy_product: async (input, walletAddress, keypair) => {
+    if (!walletAddress) return { error: "Please sign in to buy things." };
+    if (!keypair) return { error: "Account not ready. Please sign out and back in." };
+
+    // Just delegate to the gift card flow with the merchant
+    const result = await EXECUTORS.buy_gift_card({
+      merchant: input.merchant,
+      amount_usd: input.amount_usd,
+      country: input.country || "US"
+    }, walletAddress, keypair);
+
+    // Wrap with product context
+    if (result.status === "completed") {
+      return {
+        ...result,
+        product_name: input.product_name,
+        product_url: input.product_url || null,
+        message: `Purchased a $${input.amount_usd} ${input.merchant} gift card for "${input.product_name}". Use the code below at checkout on ${input.merchant}:`,
+      };
+    }
+    return { ...result, product_name: input.product_name };
   },
 
   // ─── Buy Gift Card with USDC ───
@@ -774,6 +778,7 @@ const EXECUTORS = {
       console.log(`  [GIFT] ${input.merchant} $${input.amount_usd} | tx: ${signature}`);
 
       return {
+        ui_type: "gift_card_receipt",
         status: "completed",
         merchant: product.name,
         amount_usd: input.amount_usd,
@@ -838,128 +843,6 @@ const EXECUTORS = {
     }
   },
 
-  // ─── Flights & Hotels (Duffel — live search, real booking) ───
-  flight_search: async (input) => {
-    const duffelToken = process.env.DUFFEL_API_TOKEN;
-    if (!duffelToken) return { error: "Flight search is not available right now." };
-    try {
-      const res = await fetch("https://api.duffel.com/air/offer_requests", {
-        method: "POST",
-        headers: { "Authorization": `Bearer ${duffelToken}`, "Duffel-Version": "v2", "Content-Type": "application/json" },
-        body: JSON.stringify({
-          data: {
-            slices: [
-              { origin: input.origin, destination: input.destination, departure_date: input.departure_date },
-              ...(input.return_date ? [{ origin: input.destination, destination: input.origin, departure_date: input.return_date }] : [])
-            ],
-            passengers: Array.from({ length: input.passengers || 1 }, () => ({ type: "adult" })),
-            cabin_class: input.cabin_class || "economy", max_connections: 1
-          }
-        })
-      });
-      const data = await res.json();
-      if (data.errors) return { error: data.errors.map(e => e.message).join(", ") };
-      const offers = (data.data?.offers || []).slice(0, 5);
-      return {
-        flights: offers.map(o => ({
-          id: o.id, price: "$" + o.total_amount, airline: o.owner?.name,
-          segments: o.slices?.map(s => ({
-            from: s.origin?.iata_code, to: s.destination?.iata_code,
-            departure: s.segments?.[0]?.departing_at,
-            arrival: s.segments?.[s.segments.length - 1]?.arriving_at,
-            duration: s.duration, stops: (s.segments?.length || 1) - 1,
-            carrier: s.segments?.[0]?.operating_carrier?.name
-          }))
-        })),
-        total_options: data.data?.offers?.length || 0,
-        route: `${input.origin} to ${input.destination}`, date: input.departure_date, source: "duffel"
-      };
-    } catch (e) {
-      return { error: `Flight search failed: ${e.message}` };
-    }
-  },
-
-  flight_book: async (input, walletAddress) => {
-    const duffelToken = process.env.DUFFEL_API_TOKEN;
-    if (!duffelToken || !walletAddress) return { error: "Flight booking is not available right now." };
-    try {
-      const res = await fetch("https://api.duffel.com/air/orders", {
-        method: "POST",
-        headers: { "Authorization": `Bearer ${duffelToken}`, "Duffel-Version": "v2", "Content-Type": "application/json" },
-        body: JSON.stringify({
-          data: {
-            selected_offers: [input.flight_id], type: "instant",
-            passengers: [{
-              given_name: input.passenger_name?.split(" ")[0] || "Passenger",
-              family_name: input.passenger_name?.split(" ").slice(1).join(" ") || "Name",
-              email: input.passenger_email, born_on: input.date_of_birth || "1990-01-01",
-              gender: "m", phone_number: "+10000000000", title: "mr"
-            }],
-            payments: [{ type: "balance", amount: input.amount || "0", currency: "USD" }]
-          }
-        })
-      });
-      const data = await res.json();
-      if (data.errors) return { error: data.errors.map(e => e.message).join(", ") };
-      return {
-        status: "booked", booking_ref: data.data?.booking_reference, airline: data.data?.owner?.name,
-        total: "$" + data.data?.total_amount,
-        message: `Flight booked! Ref: ${data.data?.booking_reference}. Confirmation sent to ${input.passenger_email}.`
-      };
-    } catch (e) { return { error: `Booking failed: ${e.message}` }; }
-  },
-
-  hotel_search: async (input) => {
-    const duffelToken = process.env.DUFFEL_API_TOKEN;
-    if (!duffelToken) return { error: "Hotel search is not available right now." };
-    try {
-      const res = await fetch("https://api.duffel.com/stays/search", {
-        method: "POST",
-        headers: { "Authorization": `Bearer ${duffelToken}`, "Duffel-Version": "v2", "Content-Type": "application/json" },
-        body: JSON.stringify({
-          data: {
-            location: { search_type: "city", value: input.location },
-            check_in_date: input.checkin, check_out_date: input.checkout,
-            guests: [{ type: "adult" }], rooms: 1
-          }
-        })
-      });
-      const data = await res.json();
-      if (data.errors) return { error: data.errors.map(e => e.message).join(", ") };
-      const results = Array.isArray(data.data) ? data.data : (data.data?.results || []);
-      const nights = Math.max(1, Math.round((new Date(input.checkout) - new Date(input.checkin)) / 86400000));
-      return {
-        hotels: results.slice(0, 5).map(h => ({
-          id: h.id, name: h.accommodation?.name || h.name, rating: h.accommodation?.rating,
-          total_price: h.cheapest_rate_total_amount ? "$" + h.cheapest_rate_total_amount : null,
-          per_night: h.cheapest_rate_total_amount ? "$" + (parseFloat(h.cheapest_rate_total_amount) / nights).toFixed(0) + "/night" : null
-        })),
-        location: input.location, checkin: input.checkin, checkout: input.checkout, source: "duffel"
-      };
-    } catch (e) { return { error: `Hotel search failed: ${e.message}` }; }
-  },
-
-  hotel_book: async (input, walletAddress) => {
-    const duffelToken = process.env.DUFFEL_API_TOKEN;
-    if (!duffelToken || !walletAddress) return { error: "Hotel booking is not available right now." };
-    try {
-      const res = await fetch("https://api.duffel.com/stays/bookings", {
-        method: "POST",
-        headers: { "Authorization": `Bearer ${duffelToken}`, "Duffel-Version": "v2", "Content-Type": "application/json" },
-        body: JSON.stringify({
-          data: {
-            quote_id: input.room_id,
-            guests: [{ given_name: input.guest_name?.split(" ")[0] || "Guest", family_name: input.guest_name?.split(" ").slice(1).join(" ") || "Name", email: input.guest_email }],
-            phone_number: "+10000000000", email: input.guest_email
-          }
-        })
-      });
-      const data = await res.json();
-      if (data.errors) return { error: data.errors.map(e => e.message).join(", ") };
-      return { status: "booked", booking_id: data.data?.id, message: `Hotel booked! Confirmation sent to ${input.guest_email}.` };
-    } catch (e) { return { error: `Booking failed: ${e.message}` }; }
-  },
-
   // ─── DeFi (Savings/Interest) ───
   defi_stake: async (input, walletAddress) => {
     if (!walletAddress) return { error: "Please sign in." };
@@ -995,20 +878,7 @@ const EXECUTORS = {
     ]
   }),
 
-  // ─── Other tools ───
-  create_virtual_card: async (input, walletAddress) => {
-    if (!walletAddress) return { error: "Please sign in." };
-    return { status: "coming_soon", message: `Virtual cards are coming soon.` };
-  },
-  list_virtual_cards: async () => ({ cards: [], message: "Virtual cards are coming soon." }),
-  credit_line_apply: async (input, walletAddress) => {
-    if (!walletAddress) return { error: "Please sign in." };
-    return { status: "coming_soon", message: `Credit lines are coming soon.` };
-  },
-  credit_line_status: async () => ({ credit_lines: [], message: "Credit lines are coming soon." }),
   request_payment: async (input) => ({ status: "ready", amount: input.amount, message: `Payment request for $${input.amount} created.`, link: `https://sano.finance/pay?amount=${input.amount}` }),
-  subscription_create: async (input) => ({ status: "coming_soon", message: `Recurring payments coming soon.` }),
-  subscription_list: async () => ({ subscriptions: [], message: "Recurring payments coming soon." }),
   price_alert: async (input) => ({ status: "set", message: `Alert set: ${input.asset} ${input.direction} $${input.target_price}.` }),
 };
 

@@ -16,39 +16,29 @@ const TOOLS = [
     }
   },
   {
-    name: "amazon_search",
-    description: "Search specifically on Amazon. Only use this when the user explicitly mentions Amazon. Returns prices, ratings, reviews, and Prime eligibility.",
+    name: "buy_product",
+    description: "AUTONOMOUSLY buy a product the user asked for. This is the main purchasing tool. Pass the product details and the merchant — the agent will charge the user's USDC balance and complete the purchase via the appropriate fulfillment method (gift card for retail stores, direct payment for crypto-friendly merchants). Works for Amazon, Walmart, Target, Best Buy, Home Depot, Apple, Nike, Tokopedia, Shopee, Lazada, Steam, PlayStation, Xbox, and 600+ retailers globally.",
     input_schema: {
       type: "object",
       properties: {
-        query: { type: "string", description: "Search query" },
-        max_price: { type: "number", description: "Maximum price in USD" },
-        sort_by: { type: "string", enum: ["relevance", "price_low", "price_high", "rating"], default: "relevance" }
+        product_name: { type: "string", description: "What the user is buying (e.g. 'Sony WH-1000XM5 headphones')" },
+        merchant: { type: "string", description: "Store to buy from (e.g. 'Amazon', 'Tokopedia', 'Walmart')" },
+        product_url: { type: "string", description: "Direct link to the product page" },
+        amount_usd: { type: "number", description: "Total price in USD (or USD equivalent)" },
+        country: { type: "string", default: "US", description: "ISO country code (US, ID for Indonesia, etc.)" }
       },
-      required: ["query"]
-    }
-  },
-  {
-    name: "shopify_search",
-    description: "Search a specific Shopify store for products. Use when the user provides a store URL or asks about a specific brand's Shopify store.",
-    input_schema: {
-      type: "object",
-      properties: {
-        query: { type: "string" },
-        store_url: { type: "string", description: "The Shopify store URL (e.g. allbirds.com, gymshark.com)" }
-      },
-      required: ["query"]
+      required: ["product_name", "merchant", "amount_usd"]
     }
   },
   {
     name: "buy_gift_card",
-    description: "Buy a gift card from any major retailer (Amazon, Walmart, Target, Best Buy, Home Depot, etc.) using the user's USDC balance. The user receives a redeemable code they can use on the retailer's site. Use this to actually buy products — generate a gift card for the right amount, then send the code.",
+    description: "Buy a standalone gift card (not tied to a specific product) from any retailer using USDC. Use this when user explicitly asks for a gift card as a gift, or when buy_product needs to fall back to gift card flow.",
     input_schema: {
       type: "object",
       properties: {
-        merchant: { type: "string", description: "Store name (e.g. 'Amazon', 'Walmart', 'Target', 'Best Buy', 'Steam', 'Apple', 'Nike')" },
-        amount_usd: { type: "number", description: "Gift card amount in USD" },
-        country: { type: "string", default: "US", description: "ISO country code" }
+        merchant: { type: "string", description: "Store name" },
+        amount_usd: { type: "number" },
+        country: { type: "string", default: "US" }
       },
       required: ["merchant", "amount_usd"]
     }
@@ -206,54 +196,6 @@ const TOOLS = [
     }
   },
 
-  // ─── VIRTUAL VISA CARDS ───
-  {
-    name: "create_virtual_card",
-    description: "Create a virtual Visa card funded with USDC for online purchases anywhere Visa is accepted.",
-    input_schema: {
-      type: "object",
-      properties: {
-        amount_usdc: { type: "number", description: "Amount to load onto the card" },
-        label: { type: "string", description: "Label for the card (e.g. 'Netflix', 'Shopping')" },
-        single_use: { type: "boolean", default: false, description: "Burn after first transaction" },
-        spending_limit: { type: "number", description: "Max spend per transaction" }
-      },
-      required: ["amount_usdc"]
-    }
-  },
-  {
-    name: "list_virtual_cards",
-    description: "List all your active virtual Visa cards with balances and recent transactions.",
-    input_schema: {
-      type: "object",
-      properties: {},
-      required: []
-    }
-  },
-
-  // ─── CREDIT LINES ───
-  {
-    name: "credit_line_apply",
-    description: "Apply for a USDC credit line backed by your on-chain assets. Instant approval based on wallet history.",
-    input_schema: {
-      type: "object",
-      properties: {
-        amount_requested: { type: "number", description: "Credit line amount in USDC" },
-        collateral_token: { type: "string", description: "Token to use as collateral (e.g. 'SOL', 'ETH')" }
-      },
-      required: ["amount_requested"]
-    }
-  },
-  {
-    name: "credit_line_status",
-    description: "Check your active credit lines — balance, available credit, payments due, and interest rate.",
-    input_schema: {
-      type: "object",
-      properties: {},
-      required: []
-    }
-  },
-
   // ─── DeFi ───
   {
     name: "defi_stake",
@@ -306,66 +248,6 @@ const TOOLS = [
         min_apy: { type: "number" }
       },
       required: []
-    }
-  },
-
-  // ─── TRAVEL ───
-  {
-    name: "flight_search",
-    description: "Search for flights. Compare prices across airlines. Pay with USDC.",
-    input_schema: {
-      type: "object",
-      properties: {
-        origin: { type: "string", description: "Departure airport code (e.g. 'LAX')" },
-        destination: { type: "string", description: "Arrival airport code (e.g. 'JFK')" },
-        departure_date: { type: "string", description: "YYYY-MM-DD" },
-        return_date: { type: "string", description: "YYYY-MM-DD (omit for one-way)" },
-        passengers: { type: "integer", default: 1 },
-        cabin_class: { type: "string", enum: ["economy", "premium_economy", "business", "first"], default: "economy" }
-      },
-      required: ["origin", "destination", "departure_date"]
-    }
-  },
-  {
-    name: "flight_book",
-    description: "Book a flight and pay with USDC from your wallet.",
-    input_schema: {
-      type: "object",
-      properties: {
-        flight_id: { type: "string" },
-        passenger_name: { type: "string" },
-        passenger_email: { type: "string" }
-      },
-      required: ["flight_id", "passenger_name", "passenger_email"]
-    }
-  },
-  {
-    name: "hotel_search",
-    description: "Search hotels by location, dates, and preferences. Pay with USDC.",
-    input_schema: {
-      type: "object",
-      properties: {
-        location: { type: "string" },
-        checkin: { type: "string", description: "YYYY-MM-DD" },
-        checkout: { type: "string", description: "YYYY-MM-DD" },
-        guests: { type: "integer", default: 1 },
-        max_price_per_night: { type: "number" }
-      },
-      required: ["location", "checkin", "checkout"]
-    }
-  },
-  {
-    name: "hotel_book",
-    description: "Book a hotel room and pay with USDC.",
-    input_schema: {
-      type: "object",
-      properties: {
-        hotel_id: { type: "string" },
-        room_id: { type: "string" },
-        guest_name: { type: "string" },
-        guest_email: { type: "string" }
-      },
-      required: ["hotel_id", "room_id", "guest_name", "guest_email"]
     }
   },
 
@@ -452,17 +334,13 @@ const TOOLS = [
 
 // Tool category mapping for UI
 const TOOL_CATEGORIES = {
-  "Shopping": ["product_search", "amazon_search", "shopify_search", "buy_gift_card", "list_gift_card_merchants"],
-  "Token Swaps": ["jupiter_swap", "jupiter_quote", "token_price", "limit_order"],
-  "Stocks & ETFs": ["stock_trade", "stock_quote"],
+  "Shopping": ["product_search", "buy_product", "buy_gift_card", "list_gift_card_merchants"],
+  "Stocks": ["stock_trade", "stock_quote"],
+  "Trading": ["jupiter_swap", "jupiter_quote", "token_price", "limit_order"],
   "Prediction Markets": ["prediction_bet", "prediction_search"],
   "Payments": ["send_payment", "request_payment"],
-  "Virtual Cards": ["create_virtual_card", "list_virtual_cards"],
-  "Credit": ["credit_line_apply", "credit_line_status"],
-  "DeFi": ["defi_stake", "defi_lend", "defi_borrow", "defi_yield_search"],
-  "Travel": ["flight_search", "flight_book", "hotel_search", "hotel_book"],
-  "Wallet": ["wallet_balance", "portfolio_summary", "transaction_history"],
-  "Subscriptions": ["subscription_create", "subscription_list"],
+  "Earn": ["defi_stake", "defi_lend", "defi_yield_search"],
+  "Account": ["wallet_balance", "portfolio_summary", "transaction_history"],
   "Alerts": ["price_alert"]
 };
 

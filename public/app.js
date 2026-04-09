@@ -253,14 +253,14 @@ function addWelcome() {
   messages.innerHTML = `
     <div class="welcome" id="welcome">
       <h2>What can I help you with?</h2>
-      <p>I can shop for products, book travel, send money, trade, and more. Just ask.</p>
+      <p>Shop, trade stocks, swap currencies, send money. Just ask.</p>
       <div class="suggestions">
-        <button class="suggestion" data-prompt="Find me wireless earbuds under $50">Find wireless earbuds under $50</button>
-        <button class="suggestion" data-prompt="Search flights from LA to New York next Friday">Flights LA to New York</button>
-        <button class="suggestion" data-prompt="Send $25 to alex.sol">Send $25 to a friend</button>
-        <button class="suggestion" data-prompt="What's the price of Bitcoin right now?">Check Bitcoin price</button>
-        <button class="suggestion" data-prompt="I want to earn interest on my balance">Earn interest</button>
-        <button class="suggestion" data-prompt="Create a virtual card with $100 for online shopping">Get a virtual card</button>
+        <button class="suggestion" data-prompt="Find me wireless earbuds under $50">Find wireless earbuds</button>
+        <button class="suggestion" data-prompt="Buy $100 of Apple stock">Buy $100 of Apple stock</button>
+        <button class="suggestion" data-prompt="Find me a Sony PlayStation 5">Find a PS5</button>
+        <button class="suggestion" data-prompt="Send $25 to a friend">Send money</button>
+        <button class="suggestion" data-prompt="What's Bitcoin worth right now?">Check Bitcoin price</button>
+        <button class="suggestion" data-prompt="Find me Nike Air Force 1 size 10">Find Nike sneakers</button>
       </div>
     </div>`;
 }
@@ -288,28 +288,24 @@ function addToolIndicator(toolName) {
   if (!body) return null;
 
   const names = {
-    amazon_search: "Searching Amazon",
-    shopify_search: "Searching stores",
-    jupiter_swap: "Executing swap",
+    product_search: "Searching products",
+    buy_product: "Processing purchase",
+    buy_gift_card: "Processing payment",
+    list_gift_card_merchants: "Loading stores",
+    jupiter_swap: "Swapping",
     jupiter_quote: "Getting quote",
     token_price: "Checking price",
     wallet_balance: "Checking balance",
-    flight_search: "Searching flights",
-    hotel_search: "Searching hotels",
-    flight_book: "Booking flight",
-    hotel_book: "Booking hotel",
-    send_payment: "Preparing transfer",
+    send_payment: "Sending",
     prediction_search: "Searching markets",
     prediction_bet: "Placing bet",
-    defi_stake: "Setting up staking",
-    defi_lend: "Setting up lending",
+    defi_stake: "Setting up savings",
+    defi_lend: "Setting up savings",
     defi_yield_search: "Finding rates",
-    stock_trade: "Executing trade",
+    stock_trade: "Trading",
     stock_quote: "Getting quote",
-    create_virtual_card: "Creating card",
     portfolio_summary: "Loading portfolio",
-    transaction_history: "Loading history",
-    price_compare: "Comparing prices",
+    transaction_history: "Loading activity",
   };
 
   const label = names[toolName] || toolName.replace(/_/g, " ");
@@ -323,21 +319,137 @@ function addToolIndicator(toolName) {
   return el;
 }
 
-function finishToolIndicator(el, result) {
+function finishToolIndicator(el, result, toolName) {
   if (!el) return;
   el.className = "tool-indicator done";
 
   const hasError = result?.error;
-  el.innerHTML = `<span class="check">${hasError ? "!" : "\u2713"}</span><span>${el.querySelector("span")?.textContent?.replace("...", "") || "Done"}${hasError ? " — error" : ""}</span>`;
+  const labelText = el.querySelector("span")?.textContent?.replace("...", "") || "Done";
+  el.innerHTML = `<span class="check">${hasError ? "!" : "\u2713"}</span><span>${labelText}${hasError ? " — error" : ""}</span>`;
 
-  if (result && !hasError) {
-    const detail = document.createElement("div");
-    detail.className = "tool-detail";
-    detail.textContent = JSON.stringify(result, null, 2).slice(0, 600);
-    detail.addEventListener("click", () => detail.classList.toggle("expanded"));
-    el.parentNode.insertBefore(detail, el.nextSibling);
+  if (hasError) {
+    scroll();
+    return;
   }
+
+  // Render rich UI based on result type
+  if (result?.ui_type === "product_grid" && result.products) {
+    const grid = renderProductGrid(result.products);
+    el.parentNode.insertBefore(grid, el.nextSibling);
+  } else if (result?.ui_type === "gift_card_receipt") {
+    const card = renderGiftCardReceipt(result);
+    el.parentNode.insertBefore(card, el.nextSibling);
+  } else if (result?.ui_type === "trade_receipt") {
+    const card = renderTradeReceipt(result);
+    el.parentNode.insertBefore(card, el.nextSibling);
+  }
+
   scroll();
+}
+
+function renderProductGrid(products) {
+  const grid = document.createElement("div");
+  grid.className = "product-grid";
+
+  products.forEach(p => {
+    const card = document.createElement("div");
+    card.className = "product-card";
+    const ratingHtml = p.rating ? `<span class="product-rating">${"\u2605".repeat(Math.round(p.rating))}</span> ${p.rating}${p.reviews ? ` <span>(${p.reviews})</span>` : ""}` : "";
+    card.innerHTML = `
+      <div class="product-image">
+        ${p.image ? `<img src="${esc(p.image)}" alt="${esc(p.title)}" onerror="this.style.display='none';this.parentNode.innerHTML='<div class=&quot;product-image-placeholder&quot;>image</div>'">` : `<div class="product-image-placeholder">image</div>`}
+      </div>
+      <div class="product-info">
+        <div class="product-store">${esc(p.store || "Store")}</div>
+        <div class="product-title">${esc(p.title || "Product")}</div>
+        ${ratingHtml ? `<div class="product-meta">${ratingHtml}</div>` : ""}
+        <div class="product-price-row">
+          <div class="product-price">${esc(p.price || "$—")}</div>
+        </div>
+        <div class="product-actions">
+          <button class="product-buy-btn" data-product='${esc(JSON.stringify({title: p.title, price: p.price, extracted_price: p.extracted_price, store: p.store, url: p.url}))}'>Buy</button>
+          ${p.url ? `<a href="${esc(p.url)}" target="_blank" rel="noopener" class="product-link-btn">View</a>` : ""}
+        </div>
+      </div>
+    `;
+    grid.appendChild(card);
+  });
+
+  // Wire up buy buttons
+  grid.querySelectorAll(".product-buy-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const data = JSON.parse(btn.getAttribute("data-product"));
+      const price = data.extracted_price || (data.price ? parseFloat(String(data.price).replace(/[^0-9.]/g, "")) : 0);
+      const msg = `Buy this for me: ${data.title} from ${data.store} for $${price}${data.url ? ` (${data.url})` : ""}`;
+      send(msg);
+    });
+  });
+
+  return grid;
+}
+
+function renderGiftCardReceipt(r) {
+  const div = document.createElement("div");
+  div.className = "receipt-card";
+  div.innerHTML = `
+    <div class="receipt-header">
+      <div class="receipt-icon">\u2713</div>
+      <div>
+        <div class="receipt-title">Purchase complete</div>
+        <div class="receipt-subtitle">${esc(r.merchant)} \u2022 $${r.amount_usd}</div>
+      </div>
+    </div>
+    <div class="receipt-body">
+      <div class="receipt-row"><span class="label">Store</span><span class="value">${esc(r.merchant)}</span></div>
+      <div class="receipt-row"><span class="label">Amount</span><span class="value">$${r.amount_usd}</span></div>
+      ${r.redemption_code && !r.redemption_code.includes("Pending") ? `
+        <div style="margin-top:4px">
+          <div class="label" style="font-size:12px;color:var(--text-3);margin-bottom:6px">Your code:</div>
+          <div class="receipt-code">
+            <span>${esc(r.redemption_code)}</span>
+            <button class="copy-code-btn">Copy</button>
+          </div>
+        </div>
+      ` : `
+        <div class="receipt-row"><span class="label">Code</span><span class="value">Delivering...</span></div>
+      `}
+      ${r.explorer ? `<a href="${esc(r.explorer)}" target="_blank" class="receipt-link">View transaction</a>` : ""}
+    </div>
+  `;
+
+  const copyBtn = div.querySelector(".copy-code-btn");
+  if (copyBtn) {
+    copyBtn.addEventListener("click", () => {
+      navigator.clipboard.writeText(r.redemption_code);
+      copyBtn.textContent = "Copied";
+      setTimeout(() => copyBtn.textContent = "Copy", 2000);
+    });
+  }
+
+  return div;
+}
+
+function renderTradeReceipt(r) {
+  const div = document.createElement("div");
+  div.className = "receipt-card";
+  const isBuy = r.side === "buy";
+  div.innerHTML = `
+    <div class="receipt-header">
+      <div class="receipt-icon">\u2713</div>
+      <div>
+        <div class="receipt-title">${isBuy ? "Bought" : "Sold"} ${esc(r.symbol)}</div>
+        <div class="receipt-subtitle">$${r.amount_usd}</div>
+      </div>
+    </div>
+    <div class="receipt-body">
+      <div class="receipt-row"><span class="label">${isBuy ? "Stock" : "Sold"}</span><span class="value">${esc(r.symbol)}</span></div>
+      <div class="receipt-row"><span class="label">Amount</span><span class="value">$${r.amount_usd}</span></div>
+      ${r.shares_received ? `<div class="receipt-row"><span class="label">Shares</span><span class="value">${r.shares_received.toFixed(4)}</span></div>` : ""}
+      ${r.usd_received ? `<div class="receipt-row"><span class="label">Received</span><span class="value">$${r.usd_received.toFixed(2)}</span></div>` : ""}
+      ${r.explorer ? `<a href="${esc(r.explorer)}" target="_blank" class="receipt-link">View transaction</a>` : ""}
+    </div>
+  `;
+  return div;
 }
 
 async function send(text) {
@@ -393,7 +505,7 @@ async function send(text) {
             currentTool = addToolIndicator(ev.tool);
             break;
           case "tool_result":
-            finishToolIndicator(currentTool, ev.result);
+            finishToolIndicator(currentTool, ev.result, ev.tool);
             currentTool = null;
             if (["jupiter_swap", "send_payment", "defi_stake"].includes(ev.tool)) {
               setTimeout(loadBalance, 2000);
