@@ -1,518 +1,456 @@
-// ─── SANO Agent Frontend — Real Integrations ───
+// ─── SANO Agent — Production Frontend ───
 
-const $ = (sel) => document.querySelector(sel);
-const $$ = (sel) => document.querySelectorAll(sel);
+const $ = s => document.querySelector(s);
+const $$ = s => document.querySelectorAll(s);
 
-let sessionId = localStorage.getItem("sano_session") || null;
-let isStreaming = false;
-let privyClient = null;
-let currentUser = null;
+let sessionId = localStorage.getItem("sano_sid") || null;
+let streaming = false;
+let userEmail = null;
 let walletAddress = null;
+let authToken = null;
 
-// ─── PRIVY AUTH ───
-const PRIVY_APP_ID = window.__SANO_CONFIG__?.PRIVY_APP_ID || "PRIVY_APP_ID_PLACEHOLDER";
+// ─── Auth ───
+const authScreen = $("#auth-screen");
+const appEl = $("#app");
 
-async function initPrivy() {
-  if (typeof window.Privy === "undefined") {
-    console.warn("Privy SDK not loaded yet, retrying...");
-    setTimeout(initPrivy, 500);
+// Check stored session
+const stored = localStorage.getItem("sano_auth");
+if (stored) {
+  try {
+    const data = JSON.parse(stored);
+    userEmail = data.email;
+    walletAddress = data.wallet;
+    authToken = data.token;
+    enterApp();
+  } catch (e) { localStorage.removeItem("sano_auth"); }
+}
+
+$("#auth-submit").addEventListener("click", submitEmail);
+$("#auth-email").addEventListener("keydown", e => { if (e.key === "Enter") submitEmail(); });
+$("#auth-verify").addEventListener("click", verifyCode);
+$("#auth-code").addEventListener("keydown", e => { if (e.key === "Enter") verifyCode(); });
+$("#auth-back").addEventListener("click", () => {
+  $("#auth-step-code").classList.add("hidden");
+  $("#auth-step-email").classList.remove("hidden");
+  $("#auth-error").classList.add("hidden");
+});
+
+async function submitEmail() {
+  const email = $("#auth-email").value.trim();
+  if (!email || !email.includes("@")) {
+    showAuthError("Enter a valid email address.");
+    return;
+  }
+
+  $("#auth-submit").disabled = true;
+  $("#auth-submit").textContent = "Sending code...";
+  $("#auth-error").classList.add("hidden");
+
+  try {
+    const res = await fetch("/api/auth/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email })
+    });
+    const data = await res.json();
+
+    if (data.error) {
+      showAuthError(data.error);
+      return;
+    }
+
+    $("#auth-email-display").textContent = email;
+    $("#auth-step-email").classList.add("hidden");
+    $("#auth-step-code").classList.remove("hidden");
+    $("#auth-code").focus();
+  } catch (e) {
+    showAuthError("Something went wrong. Try again.");
+  } finally {
+    $("#auth-submit").disabled = false;
+    $("#auth-submit").textContent = "Continue";
+  }
+}
+
+async function verifyCode() {
+  const code = $("#auth-code").value.trim();
+  const email = $("#auth-email").value.trim();
+  if (!code || code.length < 6) {
+    showAuthError("Enter the 6-digit code.");
+    return;
+  }
+
+  $("#auth-verify").disabled = true;
+  $("#auth-verify").textContent = "Verifying...";
+  $("#auth-error").classList.add("hidden");
+
+  try {
+    const res = await fetch("/api/auth/verify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, code })
+    });
+    const data = await res.json();
+
+    if (data.error) {
+      showAuthError(data.error);
+      return;
+    }
+
+    userEmail = data.email;
+    walletAddress = data.wallet;
+    authToken = data.token;
+
+    localStorage.setItem("sano_auth", JSON.stringify({
+      email: userEmail, wallet: walletAddress, token: authToken
+    }));
+
+    enterApp();
+  } catch (e) {
+    showAuthError("Verification failed. Try again.");
+  } finally {
+    $("#auth-verify").disabled = false;
+    $("#auth-verify").textContent = "Sign in";
+  }
+}
+
+function showAuthError(msg) {
+  const el = $("#auth-error");
+  el.textContent = msg;
+  el.classList.remove("hidden");
+}
+
+function enterApp() {
+  authScreen.classList.add("hidden");
+  appEl.classList.remove("hidden");
+
+  // Update UI
+  if (userEmail) {
+    $("#user-email").textContent = userEmail;
+    $("#user-avatar").textContent = userEmail[0].toUpperCase();
+  }
+
+  loadBalance();
+  $("#input").focus();
+}
+
+// ─── Balance ───
+async function loadBalance() {
+  if (!walletAddress) {
+    $("#balance-amount").textContent = "$0.00";
     return;
   }
 
   try {
-    privyClient = new window.Privy.PrivyClient(PRIVY_APP_ID, {
-      appearance: {
-        theme: "dark",
-        accentColor: "#6c5ce7",
-        logo: null
-      },
-      embeddedWallets: {
-        createOnLogin: "all-users",
-        defaultChain: "solana"
-      },
-      loginMethods: ["email", "wallet", "google", "twitter"],
-      solanaClusters: [{ name: "mainnet-beta", rpcUrl: "https://api.mainnet-beta.solana.com" }]
+    const res = await fetch("/api/wallet/balance", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ address: walletAddress })
     });
+    const data = await res.json();
 
-    // Check if already authenticated
-    const isAuth = await privyClient.isAuthenticated?.();
-    if (isAuth) {
-      await handleLogin();
+    let total = 0;
+    if (data.sol !== undefined && data.sol_price) {
+      total += data.sol * data.sol_price;
     }
+    if (data.usdc !== undefined) total += data.usdc;
+
+    $("#balance-amount").textContent = "$" + total.toFixed(2);
   } catch (e) {
-    console.log("Privy init:", e.message);
+    $("#balance-amount").textContent = "$—";
   }
 }
 
-async function handleLogin() {
-  try {
-    currentUser = await privyClient.getUser?.();
-    if (currentUser) {
-      // Find Solana wallet
-      const solWallet = currentUser.linkedAccounts?.find(a => a.type === "wallet" && a.chainType === "solana");
-      if (solWallet) {
-        walletAddress = solWallet.address;
-      } else if (currentUser.wallet?.address) {
-        walletAddress = currentUser.wallet.address;
-      }
-      enterApp();
-      updateWalletUI();
-    }
-  } catch (e) {
-    console.log("Login handler:", e.message);
-    // Still enter app even if user fetch fails
-    enterApp();
-  }
-}
-
-async function privyLogin() {
-  try {
-    if (privyClient?.login) {
-      await privyClient.login();
-      await handleLogin();
-    } else {
-      // Fallback: enter app without Privy if SDK isn't loaded properly
-      console.log("Privy not fully initialized, entering demo mode");
-      enterApp();
-    }
-  } catch (e) {
-    console.log("Privy login:", e.message);
-    // Still let users in
-    enterApp();
-  }
-}
-
-async function updateWalletUI() {
-  const addrEl = $("#wallet-addr");
-  const balEl = $("#wallet-bal");
-
-  if (walletAddress) {
-    addrEl.textContent = walletAddress.slice(0, 4) + "..." + walletAddress.slice(-4);
-
-    // Fetch real balance from our API
-    try {
-      const res = await fetch("/api/wallet/balance", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ address: walletAddress })
-      });
-      const data = await res.json();
-      if (data.sol !== undefined) {
-        balEl.textContent = `${data.sol.toFixed(3)} SOL`;
-        if (data.usdc !== undefined) {
-          balEl.textContent += ` · $${data.usdc.toFixed(2)}`;
-        }
-      }
-    } catch (e) {
-      balEl.textContent = "Balance unavailable";
-    }
-  } else {
-    addrEl.textContent = "No wallet";
-    balEl.textContent = "Connect in settings";
-  }
-}
-
-// ─── APP ENTRY ───
-const onboarding = $("#onboarding");
-const appEl = $("#app");
-
-function enterApp() {
-  onboarding.classList.add("hidden");
-  appEl.classList.remove("hidden");
-  localStorage.setItem("sano_onboarded", "true");
-  loadToolCategories();
-  $("#chat-input").focus();
-}
-
-// Check if returning user
-if (localStorage.getItem("sano_onboarded")) {
-  enterApp();
-  initPrivy();
-} else {
-  initPrivy();
-}
-
-// Login button
-$("#btn-privy-login").addEventListener("click", async () => {
-  await privyLogin();
-});
-
-// Logout
-$("#logout-btn").addEventListener("click", async () => {
-  try {
-    if (privyClient?.logout) await privyClient.logout();
-  } catch (e) {}
-  walletAddress = null;
-  currentUser = null;
-  localStorage.removeItem("sano_onboarded");
-  localStorage.removeItem("sano_session");
+// ─── Sidebar ───
+$("#menu-toggle").addEventListener("click", () => { $("#sidebar").classList.toggle("open"); });
+$("#new-chat").addEventListener("click", () => {
   sessionId = null;
-  appEl.classList.add("hidden");
-  onboarding.classList.remove("hidden");
-});
-
-// ─── SIDEBAR ───
-$("#sidebar-toggle").addEventListener("click", () => {
-  $("#sidebar").classList.toggle("open");
-});
-
-$("#new-chat-btn").addEventListener("click", () => {
-  sessionId = null;
-  localStorage.removeItem("sano_session");
-  const msgs = $("#chat-messages");
-  msgs.innerHTML = "";
+  localStorage.removeItem("sano_sid");
+  $("#messages").innerHTML = "";
   addWelcome();
 });
 
-$$(".quick-action").forEach(btn => {
+$$(".nav-item").forEach(btn => {
   btn.addEventListener("click", () => {
-    sendMessage(btn.dataset.prompt);
+    send(btn.dataset.prompt);
+    $("#sidebar").classList.remove("open");
   });
 });
 
-// ─── TOOLS PANEL ───
-$("#tools-btn").addEventListener("click", () => {
-  $("#tools-panel").classList.toggle("hidden");
+// Sign out
+$("#sign-out").addEventListener("click", () => {
+  localStorage.removeItem("sano_auth");
+  localStorage.removeItem("sano_sid");
+  userEmail = null;
+  walletAddress = null;
+  authToken = null;
+  sessionId = null;
+  appEl.classList.add("hidden");
+  authScreen.classList.remove("hidden");
+  $("#auth-step-code").classList.add("hidden");
+  $("#auth-step-email").classList.remove("hidden");
+  $("#auth-email").value = "";
+  $("#auth-code").value = "";
 });
 
-$("#close-tools").addEventListener("click", () => {
-  $("#tools-panel").classList.add("hidden");
+// ─── Fund Modal ───
+$("#add-funds-btn").addEventListener("click", () => { $("#fund-modal").classList.remove("hidden"); });
+$("#fund-modal-close").addEventListener("click", () => { $("#fund-modal").classList.add("hidden"); });
+$("#fund-modal").addEventListener("click", e => { if (e.target.id === "fund-modal") $("#fund-modal").classList.add("hidden"); });
+
+$("#fund-card").addEventListener("click", () => {
+  // Open MoonPay widget for fiat on-ramp
+  const moonpayUrl = `https://buy.moonpay.com/?apiKey=${window.__SANO_CONFIG__?.MOONPAY_KEY || "pk_test_key"}&currencyCode=usdc_sol&walletAddress=${walletAddress || ""}&colorCode=%237c3aed`;
+  window.open(moonpayUrl, "_blank", "width=420,height=640");
 });
 
-async function loadToolCategories() {
-  try {
-    const res = await fetch("/api/tools");
-    const data = await res.json();
-
-    const catContainer = $("#tool-categories");
-    catContainer.innerHTML = "";
-    for (const [cat, toolNames] of Object.entries(data.categories)) {
-      const div = document.createElement("div");
-      div.className = "tool-cat";
-      div.innerHTML = `${cat}<span class="tool-cat-count">${toolNames.length}</span>`;
-      catContainer.appendChild(div);
-    }
-
-    const toolsList = $("#tools-list");
-    toolsList.innerHTML = "";
-    for (const [cat, toolNames] of Object.entries(data.categories)) {
-      const title = document.createElement("div");
-      title.className = "tool-group-title";
-      title.textContent = cat;
-      toolsList.appendChild(title);
-
-      for (const name of toolNames) {
-        const tool = data.tools.find(t => t.name === name);
-        if (!tool) continue;
-        const item = document.createElement("div");
-        item.className = "tool-item";
-        item.innerHTML = `
-          <div class="tool-item-name">${formatToolName(tool.name)}</div>
-          <div class="tool-item-desc">${tool.description}</div>
-        `;
-        toolsList.appendChild(item);
-      }
-    }
-  } catch (e) {
-    console.error("Failed to load tools:", e);
+$("#fund-crypto").addEventListener("click", () => {
+  const box = $("#fund-address-box");
+  box.classList.remove("hidden");
+  if (walletAddress) {
+    $("#fund-address").textContent = walletAddress;
+  } else {
+    $("#fund-address").textContent = "Sign in to get your address";
   }
-}
-
-function formatToolName(name) {
-  return name.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
-}
-
-// ─── CHAT ───
-const chatInput = $("#chat-input");
-const sendBtn = $("#send-btn");
-const chatMessages = $("#chat-messages");
-
-chatInput.addEventListener("input", () => {
-  sendBtn.disabled = !chatInput.value.trim() || isStreaming;
-  chatInput.style.height = "auto";
-  chatInput.style.height = Math.min(chatInput.scrollHeight, 150) + "px";
 });
 
-chatInput.addEventListener("keydown", (e) => {
+$("#copy-address").addEventListener("click", () => {
+  if (walletAddress) {
+    navigator.clipboard.writeText(walletAddress);
+    $("#copy-address").title = "Copied!";
+    setTimeout(() => { $("#copy-address").title = "Copy"; }, 2000);
+  }
+});
+
+// ─── Chat ───
+const input = $("#input");
+const sendBtn = $("#send");
+const messages = $("#messages");
+
+input.addEventListener("input", () => {
+  sendBtn.disabled = !input.value.trim() || streaming;
+  input.style.height = "auto";
+  input.style.height = Math.min(input.scrollHeight, 120) + "px";
+});
+
+input.addEventListener("keydown", e => {
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
-    if (chatInput.value.trim() && !isStreaming) {
-      sendMessage(chatInput.value.trim());
-    }
+    if (input.value.trim() && !streaming) send(input.value.trim());
   }
 });
 
 sendBtn.addEventListener("click", () => {
-  if (chatInput.value.trim() && !isStreaming) {
-    sendMessage(chatInput.value.trim());
-  }
+  if (input.value.trim() && !streaming) send(input.value.trim());
 });
 
-document.addEventListener("click", (e) => {
-  const suggestion = e.target.closest(".suggestion");
-  if (suggestion) {
-    sendMessage(suggestion.dataset.prompt);
-  }
+// Suggestions
+document.addEventListener("click", e => {
+  const s = e.target.closest(".suggestion");
+  if (s) send(s.dataset.prompt);
 });
 
 function addWelcome() {
-  chatMessages.innerHTML = `
-    <div class="welcome-msg">
-      <div class="welcome-icon">S</div>
-      <h3>Hey, I'm SANO</h3>
-      <p>Your AI agent for shopping, trading, and executing on Solana. Everything is real — live swaps, real payments, actual prices. What can I do for you?</p>
-      <div class="suggestion-grid">
-        <button class="suggestion" data-prompt="Find me the cheapest wireless earbuds on Amazon">
-          <span class="suggestion-icon">🛒</span>
-          <span class="suggestion-text">Find me the cheapest wireless earbuds on Amazon</span>
-        </button>
-        <button class="suggestion" data-prompt="Swap 50 USDC to SOL on Jupiter">
-          <span class="suggestion-icon">🔄</span>
-          <span class="suggestion-text">Swap 50 USDC to SOL</span>
-        </button>
-        <button class="suggestion" data-prompt="Bet $10 on BTC above 100k by end of year">
-          <span class="suggestion-icon">📊</span>
-          <span class="suggestion-text">Bet $10 on BTC above 100k</span>
-        </button>
-        <button class="suggestion" data-prompt="Search flights from LAX to NYC next Friday">
-          <span class="suggestion-icon">✈️</span>
-          <span class="suggestion-text">Search flights LAX → NYC</span>
-        </button>
-        <button class="suggestion" data-prompt="Create a virtual Visa card with $200 for online shopping">
-          <span class="suggestion-icon">💳</span>
-          <span class="suggestion-text">Create a virtual Visa card</span>
-        </button>
-        <button class="suggestion" data-prompt="Stake 10 SOL for the best yield">
-          <span class="suggestion-icon">🌱</span>
-          <span class="suggestion-text">Stake 10 SOL for best yield</span>
-        </button>
+  messages.innerHTML = `
+    <div class="welcome" id="welcome">
+      <h2>What can I help you with?</h2>
+      <p>I can shop for products, book travel, send money, trade, and more. Just ask.</p>
+      <div class="suggestions">
+        <button class="suggestion" data-prompt="Find me wireless earbuds under $50">Find wireless earbuds under $50</button>
+        <button class="suggestion" data-prompt="Search flights from LA to New York next Friday">Flights LA to New York</button>
+        <button class="suggestion" data-prompt="Send $25 to alex.sol">Send $25 to a friend</button>
+        <button class="suggestion" data-prompt="What's the price of Bitcoin right now?">Check Bitcoin price</button>
+        <button class="suggestion" data-prompt="I want to earn interest on my balance">Earn interest</button>
+        <button class="suggestion" data-prompt="Create a virtual card with $100 for online shopping">Get a virtual card</button>
       </div>
     </div>`;
 }
 
-function addMessage(role, content) {
-  const welcome = chatMessages.querySelector(".welcome-msg");
-  if (welcome) welcome.remove();
+function addMsg(role, content) {
+  const w = messages.querySelector(".welcome");
+  if (w) w.remove();
 
   const div = document.createElement("div");
-  div.className = `message ${role}`;
-
-  const avatar = role === "assistant" ? "S" : "Y";
+  div.className = `msg ${role}`;
+  const av = role === "assistant" ? "S" : (userEmail ? userEmail[0].toUpperCase() : "Y");
   div.innerHTML = `
-    <div class="message-avatar">${avatar}</div>
-    <div class="message-body">
-      <div class="message-content">${role === "user" ? escapeHtml(content) : ""}</div>
-    </div>
-  `;
-
-  chatMessages.appendChild(div);
-  scrollToBottom();
-  return div.querySelector(".message-content");
+    <div class="msg-avatar">${av}</div>
+    <div class="msg-body">
+      <div class="msg-text">${role === "user" ? esc(content) : ""}</div>
+    </div>`;
+  messages.appendChild(div);
+  scroll();
+  return div.querySelector(".msg-text");
 }
 
-function addToolCard(toolName) {
-  const toolIcons = {
-    amazon: "🛒", shopify: "🛍️", jupiter: "🔄", token: "💰",
-    stock: "📈", prediction: "🎯", send: "💸", flight: "✈️",
-    hotel: "🏨", wallet: "👛", portfolio: "📊", defi: "🌱",
-    credit: "💳", virtual: "💳", subscription: "🔁", price: "📡",
-    limit: "⏳", transaction: "📜"
+function addToolIndicator(toolName) {
+  const bodies = messages.querySelectorAll(".msg.assistant .msg-body");
+  const body = bodies[bodies.length - 1];
+  if (!body) return null;
+
+  const names = {
+    amazon_search: "Searching Amazon",
+    shopify_search: "Searching stores",
+    jupiter_swap: "Executing swap",
+    jupiter_quote: "Getting quote",
+    token_price: "Checking price",
+    wallet_balance: "Checking balance",
+    flight_search: "Searching flights",
+    hotel_search: "Searching hotels",
+    flight_book: "Booking flight",
+    hotel_book: "Booking hotel",
+    send_payment: "Preparing transfer",
+    prediction_search: "Searching markets",
+    prediction_bet: "Placing bet",
+    defi_stake: "Setting up staking",
+    defi_lend: "Setting up lending",
+    defi_yield_search: "Finding rates",
+    stock_trade: "Executing trade",
+    stock_quote: "Getting quote",
+    create_virtual_card: "Creating card",
+    portfolio_summary: "Loading portfolio",
+    transaction_history: "Loading history",
+    price_compare: "Comparing prices",
   };
 
-  const iconKey = Object.keys(toolIcons).find(k => toolName.includes(k)) || "⚡";
-  const icon = toolIcons[iconKey] || "⚡";
+  const label = names[toolName] || toolName.replace(/_/g, " ");
+  const el = document.createElement("div");
+  el.className = "tool-indicator";
+  el.innerHTML = `<div class="spinner"></div><span>${label}...</span>`;
 
-  const bodies = chatMessages.querySelectorAll(".message.assistant .message-body");
-  const lastBody = bodies[bodies.length - 1];
-  if (!lastBody) return null;
-
-  const card = document.createElement("div");
-  card.className = "tool-card";
-  card.id = `tool-${toolName}-${Date.now()}`;
-  card.innerHTML = `
-    <div class="tool-card-header">
-      <div class="tool-card-icon">${icon}</div>
-      <div class="tool-card-name">${formatToolName(toolName)}</div>
-      <div class="tool-card-status running">Executing...</div>
-    </div>
-  `;
-
-  const content = lastBody.querySelector(".message-content");
-  lastBody.insertBefore(card, content);
-  scrollToBottom();
-  return card;
+  const text = body.querySelector(".msg-text");
+  body.insertBefore(el, text);
+  scroll();
+  return el;
 }
 
-function updateToolCard(card, result) {
-  if (!card) return;
-  const status = card.querySelector(".tool-card-status");
+function finishToolIndicator(el, result) {
+  if (!el) return;
+  el.className = "tool-indicator done";
 
-  if (result.error) {
-    status.className = "tool-card-status error";
-    status.textContent = "✗ Error";
-  } else {
-    status.className = "tool-card-status done";
-    status.textContent = "✓ Done";
+  const hasError = result?.error;
+  el.innerHTML = `<span class="check">${hasError ? "!" : "\u2713"}</span><span>${el.querySelector("span")?.textContent?.replace("...", "") || "Done"}${hasError ? " — error" : ""}</span>`;
+
+  if (result && !hasError) {
+    const detail = document.createElement("div");
+    detail.className = "tool-detail";
+    detail.textContent = JSON.stringify(result, null, 2).slice(0, 600);
+    detail.addEventListener("click", () => detail.classList.toggle("expanded"));
+    el.parentNode.insertBefore(detail, el.nextSibling);
   }
-
-  const detail = document.createElement("div");
-  detail.className = "tool-card-detail";
-  // Format result nicely
-  const display = result.error ? result.error : JSON.stringify(result, null, 2);
-  detail.textContent = display.slice(0, 800);
-  card.appendChild(detail);
-  scrollToBottom();
+  scroll();
 }
 
-async function sendMessage(text) {
-  isStreaming = true;
+async function send(text) {
+  streaming = true;
   sendBtn.disabled = true;
-  chatInput.value = "";
-  chatInput.style.height = "auto";
+  input.value = "";
+  input.style.height = "auto";
 
-  addMessage("user", text);
-  const contentEl = addMessage("assistant", "");
-  contentEl.innerHTML = `<div class="typing-indicator"><div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div></div>`;
+  addMsg("user", text);
+  const textEl = addMsg("assistant", "");
+  textEl.innerHTML = `<div class="typing"><span></span><span></span><span></span></div>`;
 
   try {
-    const response = await fetch("/api/chat", {
+    const res = await fetch("/api/chat", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        message: text,
-        sessionId,
-        walletAddress: walletAddress || null
-      })
+      headers: {
+        "Content-Type": "application/json",
+        ...(authToken ? { "Authorization": `Bearer ${authToken}` } : {})
+      },
+      body: JSON.stringify({ message: text, sessionId, walletAddress })
     });
 
-    const reader = response.body.getReader();
+    const reader = res.body.getReader();
     const decoder = new TextDecoder();
-    let buffer = "";
-    let hasStartedText = false;
-    let currentToolCard = null;
-    let rawText = "";
+    let buf = "";
+    let started = false;
+    let raw = "";
+    let currentTool = null;
 
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split("\n");
+      buf = lines.pop() || "";
 
       for (const line of lines) {
         if (!line.startsWith("data: ")) continue;
-        const raw = line.slice(6).trim();
-        if (!raw) continue;
+        const payload = line.slice(6).trim();
+        if (!payload) continue;
+        let ev;
+        try { ev = JSON.parse(payload); } catch { continue; }
 
-        let event;
-        try { event = JSON.parse(raw); } catch { continue; }
-
-        switch (event.type) {
+        switch (ev.type) {
           case "text":
-            if (!hasStartedText) {
-              contentEl.innerHTML = "";
-              hasStartedText = true;
-            }
-            rawText += event.content;
-            contentEl.innerHTML = renderMarkdown(rawText);
-            scrollToBottom();
+            if (!started) { textEl.innerHTML = ""; started = true; }
+            raw += ev.content;
+            textEl.innerHTML = md(raw);
+            scroll();
             break;
-
           case "tool_start":
-            if (!hasStartedText) {
-              contentEl.innerHTML = "";
-              hasStartedText = true;
-            }
-            currentToolCard = addToolCard(event.tool);
+            if (!started) { textEl.innerHTML = ""; started = true; }
+            currentTool = addToolIndicator(ev.tool);
             break;
-
           case "tool_result":
-            if (currentToolCard) {
-              updateToolCard(currentToolCard, event.result);
-              currentToolCard = null;
-            }
-            // Refresh wallet balance after transactions
-            if (["jupiter_swap", "send_payment", "defi_stake", "defi_lend"].includes(event.tool)) {
-              setTimeout(updateWalletUI, 2000);
+            finishToolIndicator(currentTool, ev.result);
+            currentTool = null;
+            if (["jupiter_swap", "send_payment", "defi_stake"].includes(ev.tool)) {
+              setTimeout(loadBalance, 2000);
             }
             break;
-
           case "done":
-            if (event.sessionId) {
-              sessionId = event.sessionId;
-              localStorage.setItem("sano_session", sessionId);
-            }
+            if (ev.sessionId) { sessionId = ev.sessionId; localStorage.setItem("sano_sid", sessionId); }
             break;
-
           case "error":
-            contentEl.innerHTML = `<span style="color: var(--red)">Error: ${escapeHtml(event.message)}</span>`;
+            textEl.innerHTML = `<span style="color:var(--red)">Something went wrong: ${esc(ev.message)}</span>`;
             break;
         }
       }
     }
 
-    if (!hasStartedText) {
-      contentEl.innerHTML = `<span style="color: var(--text-tertiary)">No response received.</span>`;
-    }
+    if (!started) textEl.innerHTML = `<span style="color:var(--text-3)">No response.</span>`;
   } catch (err) {
-    contentEl.innerHTML = `<span style="color: var(--red)">Connection error: ${escapeHtml(err.message)}</span>`;
-    console.error(err);
+    textEl.innerHTML = `<span style="color:var(--red)">Connection error. Check that the server is running.</span>`;
   }
 
-  isStreaming = false;
-  sendBtn.disabled = !chatInput.value.trim();
-  scrollToBottom();
+  streaming = false;
+  sendBtn.disabled = !input.value.trim();
+  scroll();
 }
 
-function scrollToBottom() {
-  chatMessages.scrollTop = chatMessages.scrollHeight;
+function scroll() { messages.scrollTop = messages.scrollHeight; }
+
+function esc(s) {
+  const d = document.createElement("div");
+  d.textContent = s;
+  return d.innerHTML;
 }
 
-function escapeHtml(str) {
-  const div = document.createElement("div");
-  div.textContent = str;
-  return div.innerHTML;
-}
-
-function renderMarkdown(text) {
+function md(text) {
   if (!text) return "";
-  let html = escapeHtml(text);
-
-  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
-  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-  html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
-  html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
-  html = html.replace(/^- (.+)$/gm, '<li>$1</li>');
-  html = html.replace(/(<li>.*<\/li>)/gs, '<ul>$1</ul>');
-  html = html.replace(/<\/ul>\s*<ul>/g, '');
-
-  html = html.replace(/\|(.+)\|\n\|[-| ]+\|\n((?:\|.+\|\n?)+)/g, (match, header, body) => {
-    const headers = header.split('|').map(h => h.trim()).filter(Boolean);
-    const rows = body.trim().split('\n').map(row =>
-      row.split('|').map(c => c.trim()).filter(Boolean)
-    );
-    let table = '<table><thead><tr>' + headers.map(h => `<th>${h}</th>`).join('') + '</tr></thead><tbody>';
-    rows.forEach(row => {
-      table += '<tr>' + row.map(c => `<td>${c}</td>`).join('') + '</tr>';
-    });
-    return table + '</tbody></table>';
+  let h = esc(text);
+  h = h.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
+  h = h.replace(/`([^`]+)`/g, '<code>$1</code>');
+  h = h.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  h = h.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+  h = h.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+  h = h.replace(/^- (.+)$/gm, '<li>$1</li>');
+  h = h.replace(/(<li>.*<\/li>)/gs, '<ul>$1</ul>');
+  h = h.replace(/<\/ul>\s*<ul>/g, '');
+  h = h.replace(/\|(.+)\|\n\|[-| ]+\|\n((?:\|.+\|\n?)+)/g, (_, hdr, body) => {
+    const hs = hdr.split('|').map(x => x.trim()).filter(Boolean);
+    const rs = body.trim().split('\n').map(r => r.split('|').map(c => c.trim()).filter(Boolean));
+    return '<table><thead><tr>' + hs.map(x => `<th>${x}</th>`).join('') + '</tr></thead><tbody>' +
+      rs.map(r => '<tr>' + r.map(c => `<td>${c}</td>`).join('') + '</tr>').join('') + '</tbody></table>';
   });
-
-  html = html.replace(/\n\n/g, '</p><p>');
-  html = html.replace(/\n/g, '<br>');
-  html = '<p>' + html + '</p>';
-  html = html.replace(/<p><\/p>/g, '');
-  html = html.replace(/<p>(<h[23]>)/g, '$1');
-  html = html.replace(/(<\/h[23]>)<\/p>/g, '$1');
-  html = html.replace(/<p>(<table>)/g, '$1');
-  html = html.replace(/(<\/table>)<\/p>/g, '$1');
-  html = html.replace(/<p>(<ul>)/g, '$1');
-  html = html.replace(/(<\/ul>)<\/p>/g, '$1');
-  html = html.replace(/<p>(<pre>)/g, '$1');
-  html = html.replace(/(<\/pre>)<\/p>/g, '$1');
-
-  return html;
+  h = h.replace(/\n\n/g, '</p><p>');
+  h = h.replace(/\n/g, '<br>');
+  h = '<p>' + h + '</p>';
+  h = h.replace(/<p><\/p>/g, '');
+  h = h.replace(/<p>(<h3>)/g, '$1').replace(/(<\/h3>)<\/p>/g, '$1');
+  h = h.replace(/<p>(<table>)/g, '$1').replace(/(<\/table>)<\/p>/g, '$1');
+  h = h.replace(/<p>(<ul>)/g, '$1').replace(/(<\/ul>)<\/p>/g, '$1');
+  h = h.replace(/<p>(<pre>)/g, '$1').replace(/(<\/pre>)<\/p>/g, '$1');
+  return h;
 }

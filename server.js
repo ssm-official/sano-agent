@@ -1,87 +1,238 @@
 require("dotenv").config();
 const express = require("express");
 const path = require("path");
+const crypto = require("crypto");
 const Anthropic = require("@anthropic-ai/sdk").default;
+const rateLimit = require("express-rate-limit");
 const { TOOLS, TOOL_CATEGORIES } = require("./tools");
 const { executeTool } = require("./tool-executor");
 const { v4: uuidv4 } = require("uuid");
 const fetch = require("node-fetch");
-const { Connection, PublicKey, LAMPORTS_PER_SOL } = require("@solana/web3.js");
+const { Connection, PublicKey, LAMPORTS_PER_SOL, Keypair } = require("@solana/web3.js");
+const bs58 = require("bs58");
 
 const app = express();
 app.use(express.json());
 
+// ─── Config ───
 const SOLANA_RPC = process.env.SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com";
 const connection = new Connection(SOLANA_RPC, "confirmed");
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-// Inject Privy app ID into frontend
+// ─── Rate Limiting (per IP) ───
+const chatLimiter = rateLimit({
+  windowMs: 60 * 1000,       // 1 minute
+  max: 20,                    // 20 messages/min per IP
+  message: { error: "Too many requests. Wait a moment." },
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,  // 15 minutes
+  max: 10,                    // 10 auth attempts per 15 min
+  message: { error: "Too many attempts. Try again later." }
+});
+
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,                    // 60 API calls/min per IP
+  message: { error: "Rate limited." }
+});
+
+app.use("/api/chat", chatLimiter);
+app.use("/api/auth", authLimiter);
+app.use("/api/wallet", apiLimiter);
+
+// ─── Price Cache (avoids hammering external APIs) ───
+const priceCache = new Map();
+const PRICE_CACHE_TTL = 30 * 1000; // 30 seconds
+
+function getCachedPrice(key) {
+  const entry = priceCache.get(key);
+  if (entry && Date.now() - entry.time < PRICE_CACHE_TTL) return entry.data;
+  return null;
+}
+
+function setCachedPrice(key, data) {
+  priceCache.set(key, { data, time: Date.now() });
+  // Clean old entries periodically
+  if (priceCache.size > 500) {
+    const now = Date.now();
+    for (const [k, v] of priceCache) {
+      if (now - v.time > PRICE_CACHE_TTL * 2) priceCache.delete(k);
+    }
+  }
+}
+
+// ─── Auth: Email + OTP (self-contained, no Privy dependency) ───
+// In production: replace with Privy server SDK or add Redis for OTP storage
+const pendingAuth = new Map();  // email -> { code, expires, attempts }
+const users = new Map();        // email -> { wallet, walletSecret, created }
+const sessions = new Map();     // sessionId -> { messages[] }
+
+// Generate OTP
+function generateOTP() {
+  return crypto.randomInt(100000, 999999).toString();
+}
+
+// Send OTP via email (uses Privy or fallback)
+async function sendOTP(email, code) {
+  // If Privy is configured, use their auth
+  if (process.env.PRIVY_APP_ID && process.env.PRIVY_APP_SECRET) {
+    try {
+      const res = await fetch("https://auth.privy.io/api/v1/otp/send", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "privy-app-id": process.env.PRIVY_APP_ID,
+          "Authorization": `Basic ${Buffer.from(`${process.env.PRIVY_APP_ID}:${process.env.PRIVY_APP_SECRET}`).toString("base64")}`
+        },
+        body: JSON.stringify({ email })
+      });
+      if (res.ok) return true;
+    } catch (e) {
+      console.log("Privy OTP fallback:", e.message);
+    }
+  }
+
+  // Fallback: log code (in production, use SendGrid/Resend/Postmark)
+  if (process.env.RESEND_API_KEY) {
+    try {
+      const res = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${process.env.RESEND_API_KEY}`
+        },
+        body: JSON.stringify({
+          from: process.env.FROM_EMAIL || "SANO <noreply@sano.app>",
+          to: email,
+          subject: "Your SANO verification code",
+          html: `<div style="font-family:sans-serif;max-width:400px;margin:0 auto;padding:40px 20px">
+            <h2 style="margin-bottom:20px">Sign in to SANO</h2>
+            <p style="color:#666;margin-bottom:24px">Enter this code to continue:</p>
+            <div style="font-size:32px;font-weight:700;letter-spacing:8px;text-align:center;padding:20px;background:#f5f5f5;border-radius:8px;margin-bottom:24px">${code}</div>
+            <p style="color:#999;font-size:13px">This code expires in 10 minutes. If you didn't request this, ignore this email.</p>
+          </div>`
+        })
+      });
+      if (res.ok) return true;
+    } catch (e) {
+      console.log("Resend fallback:", e.message);
+    }
+  }
+
+  // Dev fallback: log to console
+  console.log(`\n  [AUTH] Code for ${email}: ${code}\n`);
+  return true;
+}
+
+// Auth: Start (send OTP)
+app.post("/api/auth/start", async (req, res) => {
+  const { email } = req.body;
+  if (!email || !email.includes("@")) {
+    return res.json({ error: "Valid email required." });
+  }
+
+  const code = generateOTP();
+  pendingAuth.set(email.toLowerCase(), {
+    code,
+    expires: Date.now() + 10 * 60 * 1000, // 10 min
+    attempts: 0
+  });
+
+  await sendOTP(email.toLowerCase(), code);
+  res.json({ ok: true, message: "Code sent." });
+});
+
+// Auth: Verify OTP
+app.post("/api/auth/verify", async (req, res) => {
+  const { email, code } = req.body;
+  const key = email?.toLowerCase();
+
+  if (!key || !code) return res.json({ error: "Email and code required." });
+
+  const pending = pendingAuth.get(key);
+  if (!pending) return res.json({ error: "No code sent. Start over." });
+  if (Date.now() > pending.expires) {
+    pendingAuth.delete(key);
+    return res.json({ error: "Code expired. Request a new one." });
+  }
+
+  pending.attempts++;
+  if (pending.attempts > 5) {
+    pendingAuth.delete(key);
+    return res.json({ error: "Too many attempts. Request a new code." });
+  }
+
+  // Check code (or bypass in dev if no email service)
+  const validCode = pending.code === code;
+  const devBypass = !process.env.RESEND_API_KEY && !process.env.PRIVY_APP_SECRET;
+
+  if (!validCode && !devBypass) {
+    return res.json({ error: "Invalid code. Try again." });
+  }
+
+  pendingAuth.delete(key);
+
+  // Get or create user
+  let user = users.get(key);
+  if (!user) {
+    // Create embedded Solana wallet
+    const keypair = Keypair.generate();
+    user = {
+      email: key,
+      wallet: keypair.publicKey.toBase58(),
+      walletSecret: bs58.encode(keypair.secretKey), // encrypted in production
+      created: new Date().toISOString()
+    };
+    users.set(key, user);
+    console.log(`  [USER] New user: ${key} -> wallet ${user.wallet}`);
+  }
+
+  // Create auth token
+  const token = crypto.randomBytes(32).toString("hex");
+
+  res.json({
+    ok: true,
+    email: key,
+    wallet: user.wallet,
+    token
+  });
+});
+
+// ─── Inject config into frontend ───
 app.get("/", (req, res) => {
   const fs = require("fs");
   let html = fs.readFileSync(path.join(__dirname, "public", "index.html"), "utf-8");
-  // Inject config before app.js loads
-  const config = `<script>window.__SANO_CONFIG__ = { PRIVY_APP_ID: "${process.env.PRIVY_APP_ID || ""}" };</script>`;
+  const config = `<script>window.__SANO_CONFIG__ = {
+    PRIVY_APP_ID: "${process.env.PRIVY_APP_ID || ""}",
+    MOONPAY_KEY: "${process.env.MOONPAY_API_KEY || "pk_test_123"}"
+  };</script>`;
   html = html.replace("</head>", `${config}\n</head>`);
   res.send(html);
 });
 
-// Serve static files (but not index.html, we handle that above)
 app.use(express.static("public", { index: false }));
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-
-// Session store
-const sessions = new Map();
-
-const SYSTEM_PROMPT = `You are SANO — an AI agent that shops, trades, and executes on Solana, all from this chat interface.
-
-You have 30+ real tools connected to live APIs:
-
-LIVE INTEGRATIONS:
-• Jupiter DEX — real token swaps, quotes, and limit orders on Solana (best price routing)
-• Solana RPC — real wallet balances, token holdings, transaction history
-• On-chain payments — real SOL/SPL token transfers to any address or .sol domain
-• Token prices — real-time via Jupiter Price API and CoinGecko
-• Polymarket — real prediction market search
-• DeFi protocols — Marinade, Jito, Kamino, Marginfi, Orca, Raydium (real yield data)
-
-AVAILABLE WITH API KEYS:
-• Amazon search (1B+ products) — needs SEARCH_API_KEY (ScaleSERP)
-• Flights & hotels — needs DUFFEL_API_TOKEN (duffel.com — real bookings)
-• Shopify search — works with any store URL
-• Virtual Visa cards — needs card provider (Immersve/Helio)
-• Stock trading — needs tokenized asset platform integration
-
-PERSONALITY:
-- You are fast, confident, and concise
-- You speak like a knowledgeable friend who's also a power user
-- Short paragraphs, no walls of text
-- When showing results, format them clearly with markdown
-- Always confirm before executing transactions over $50
-- Show exact amounts and prices before any swap or purchase
-- When a tool returns "api_key_required", explain what's needed clearly and suggest alternatives
-
-RULES:
-- Always use tools for real data — never make up prices, balances, or results
-- For swaps: ALWAYS get a quote first, show the user, then execute on confirmation
-- For payments: show amount and recipient clearly, then execute
-- Show transaction signatures/explorer links after on-chain actions
-- The user's wallet address is provided in the context — use it for on-chain tools
-- If something requires an API key that isn't configured, be honest and tell them what's needed`;
-
-// Real wallet balance endpoint
+// ─── Wallet Balance (with caching) ───
 app.post("/api/wallet/balance", async (req, res) => {
   try {
     const { address } = req.body;
     if (!address) return res.json({ error: "No address" });
 
+    // Check cache
+    const cached = getCachedPrice(`balance:${address}`);
+    if (cached) return res.json(cached);
+
     const pubkey = new PublicKey(address);
     const balance = await connection.getBalance(pubkey);
     const solAmount = balance / LAMPORTS_PER_SOL;
 
-    // Get USDC balance
+    // USDC
     const USDC_MINT = new PublicKey("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
     let usdcBalance = 0;
-
     try {
       const tokenAccounts = await connection.getParsedTokenAccountsByOwner(pubkey, { mint: USDC_MINT });
       if (tokenAccounts.value.length > 0) {
@@ -89,43 +240,90 @@ app.post("/api/wallet/balance", async (req, res) => {
       }
     } catch (e) {}
 
-    res.json({ sol: solAmount, usdc: usdcBalance, address });
+    // SOL price
+    let solPrice = 0;
+    const cachedSolPrice = getCachedPrice("sol_price");
+    if (cachedSolPrice) {
+      solPrice = cachedSolPrice;
+    } else {
+      try {
+        const priceRes = await fetch("https://api.jup.ag/price/v2?ids=So11111111111111111111111111111111111111112");
+        const priceData = await priceRes.json();
+        solPrice = parseFloat(priceData.data?.["So11111111111111111111111111111111111111112"]?.price || 0);
+        setCachedPrice("sol_price", solPrice);
+      } catch (e) {}
+    }
+
+    const result = { sol: solAmount, usdc: usdcBalance, sol_price: solPrice, address };
+    setCachedPrice(`balance:${address}`, result);
+    res.json(result);
   } catch (e) {
     res.json({ error: e.message });
   }
 });
 
-// Chat endpoint with streaming + agentic loop
+// ─── Chat with agentic loop ───
+const SYSTEM_PROMPT = `You are SANO, a helpful assistant that can shop, book travel, trade, send money, and manage finances.
+
+You speak in plain English. Never use crypto jargon unless the user does first. Say "balance" not "wallet balance", "send money" not "send payment", "dollars" not "USDC" (unless the user specifically asks about crypto). Show all prices in $.
+
+You have real tools connected to live APIs:
+
+WHAT YOU CAN DO:
+- Search and buy products on Amazon and Shopify stores
+- Book flights and hotels (via Duffel)
+- Send money to anyone
+- Swap currencies and tokens (via Jupiter on Solana)
+- Check prices for any asset
+- Earn interest via DeFi protocols
+- Trade prediction markets
+- Create virtual cards for online shopping
+- Track spending and portfolio
+
+HOW TO BEHAVE:
+- Be concise and direct. Short sentences
+- When showing search results, format them clearly
+- Always confirm before spending money (any amount)
+- Show the price before any purchase or transaction
+- If a tool returns "api_key_required", briefly mention the feature needs setup and suggest what the user can do instead
+- Never mention technical details like "Solana", "USDC", "SPL tokens", "RPC" unless the user asks
+- Say "your account" not "your wallet"
+- Say "send" not "transfer on-chain"
+
+IMPORTANT:
+- Use tools for real data. Never guess prices or invent results
+- The user's address is provided — use it for balance/payment tools`;
+
 app.post("/api/chat", async (req, res) => {
   const { message, sessionId, walletAddress } = req.body;
   const sid = sessionId || uuidv4();
 
-  if (!sessions.has(sid)) {
-    sessions.set(sid, []);
-  }
-
+  if (!sessions.has(sid)) sessions.set(sid, []);
   const history = sessions.get(sid);
   history.push({ role: "user", content: message });
 
-  // SSE headers
+  // Limit history to last 20 messages to control costs
+  if (history.length > 40) history.splice(0, history.length - 40);
+
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
-  res.setHeader("X-Session-Id", sid);
 
-  // Build system prompt with wallet context
   let systemPrompt = SYSTEM_PROMPT;
   if (walletAddress) {
-    systemPrompt += `\n\nUSER WALLET: ${walletAddress}\nAlways use this address for on-chain operations. Pass it to wallet_balance, send_payment, etc.`;
+    systemPrompt += `\n\nUser's account address: ${walletAddress}`;
   }
 
   try {
     let messages = [...history];
     let fullResponse = "";
     let toolResults = [];
+    let loopCount = 0;
+    const MAX_LOOPS = 5; // Prevent runaway tool loops
 
-    // Agentic loop
-    while (true) {
+    while (loopCount < MAX_LOOPS) {
+      loopCount++;
+
       const stream = anthropic.messages.stream({
         model: "claude-sonnet-4-20250514",
         max_tokens: 4096,
@@ -140,13 +338,11 @@ app.post("/api/chat", async (req, res) => {
       let textContent = "";
 
       for await (const event of stream) {
-        if (event.type === "content_block_start") {
-          if (event.content_block.type === "tool_use") {
-            hasToolUse = true;
-            currentToolUse = { id: event.content_block.id, name: event.content_block.name };
-            toolInputJson = "";
-            res.write(`data: ${JSON.stringify({ type: "tool_start", tool: currentToolUse.name })}\n\n`);
-          }
+        if (event.type === "content_block_start" && event.content_block.type === "tool_use") {
+          hasToolUse = true;
+          currentToolUse = { id: event.content_block.id, name: event.content_block.name };
+          toolInputJson = "";
+          res.write(`data: ${JSON.stringify({ type: "tool_start", tool: currentToolUse.name })}\n\n`);
         } else if (event.type === "content_block_delta") {
           if (event.delta.type === "text_delta") {
             textContent += event.delta.text;
@@ -156,15 +352,10 @@ app.post("/api/chat", async (req, res) => {
           }
         } else if (event.type === "content_block_stop" && currentToolUse) {
           const toolInput = toolInputJson ? JSON.parse(toolInputJson) : {};
-
-          // Execute tool with real APIs
           const toolResult = await executeTool(currentToolUse.name, toolInput, walletAddress);
 
           res.write(`data: ${JSON.stringify({
-            type: "tool_result",
-            tool: currentToolUse.name,
-            input: toolInput,
-            result: toolResult
+            type: "tool_result", tool: currentToolUse.name, input: toolInput, result: toolResult
           })}\n\n`);
 
           toolResults.push({
@@ -172,7 +363,6 @@ app.post("/api/chat", async (req, res) => {
             tool_use_id: currentToolUse.id,
             content: JSON.stringify(toolResult)
           });
-
           currentToolUse = null;
           toolInputJson = "";
         }
@@ -182,11 +372,8 @@ app.post("/api/chat", async (req, res) => {
         const finalMessage = await stream.finalMessage();
         messages.push({ role: "assistant", content: finalMessage.content });
         messages.push({ role: "user", content: toolResults });
-
         fullResponse += textContent;
         toolResults = [];
-        textContent = "";
-
         if (finalMessage.stop_reason === "end_turn") break;
       } else {
         fullResponse += textContent;
@@ -195,31 +382,49 @@ app.post("/api/chat", async (req, res) => {
     }
 
     history.push({ role: "assistant", content: fullResponse });
-
     res.write(`data: ${JSON.stringify({ type: "done", sessionId: sid })}\n\n`);
     res.end();
   } catch (err) {
-    console.error("Chat error:", err);
+    console.error("Chat error:", err.message);
     res.write(`data: ${JSON.stringify({ type: "error", message: err.message })}\n\n`);
     res.end();
   }
 });
 
-// Tool categories for UI
+// ─── Tool list for UI ───
 app.get("/api/tools", (req, res) => {
   res.json({ tools: TOOLS.map(t => ({ name: t.name, description: t.description })), categories: TOOL_CATEGORIES });
 });
 
+// ─── Health check ───
+app.get("/api/health", (req, res) => {
+  res.json({ status: "ok", uptime: process.uptime() });
+});
+
+// ─── Cleanup stale sessions every 30 min ───
+setInterval(() => {
+  const maxAge = 2 * 60 * 60 * 1000; // 2 hours
+  const now = Date.now();
+  // Sessions don't have timestamps so just cap size
+  if (sessions.size > 1000) {
+    const keys = [...sessions.keys()];
+    keys.slice(0, keys.length - 500).forEach(k => sessions.delete(k));
+  }
+  // Clean expired auth
+  for (const [k, v] of pendingAuth) {
+    if (now > v.expires) pendingAuth.delete(k);
+  }
+}, 30 * 60 * 1000);
+
+// ─── Start ───
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`\n  ██████  █████  ███    ██  ██████  `);
-  console.log(`  ██      ██   ██ ████   ██ ██    ██ `);
-  console.log(`  ███████ ███████ ██ ██  ██ ██    ██ `);
-  console.log(`       ██ ██   ██ ██  ██ ██ ██    ██ `);
-  console.log(`  ██████  ██   ██ ██   ████  ██████  `);
-  console.log(`\n  🟢 SANO Agent running → http://localhost:${PORT}`);
-  console.log(`  📡 Solana RPC: ${SOLANA_RPC}`);
-  console.log(`  🔑 Privy: ${process.env.PRIVY_APP_ID ? "Configured" : "Not set"}`);
-  console.log(`  🛒 Amazon Search: ${process.env.SEARCH_API_KEY ? "Configured" : "Not set"}`);
-  console.log(`  ✈️  Duffel (Flights+Hotels): ${process.env.DUFFEL_API_TOKEN ? "Configured" : "Not set"}\n`);
+  console.log(`\n  SANO Agent`);
+  console.log(`  ─────────`);
+  console.log(`  URL:      http://localhost:${PORT}`);
+  console.log(`  RPC:      ${SOLANA_RPC.includes("helius") ? "Helius" : SOLANA_RPC.includes("quicknode") ? "QuickNode" : "Public"}`);
+  console.log(`  Email:    ${process.env.RESEND_API_KEY ? "Resend" : process.env.PRIVY_APP_SECRET ? "Privy" : "Console (dev)"}`);
+  console.log(`  Duffel:   ${process.env.DUFFEL_API_TOKEN ? "Yes" : "No"}`);
+  console.log(`  MoonPay:  ${process.env.MOONPAY_API_KEY ? "Yes" : "No"}`);
+  console.log(`  Search:   ${process.env.SEARCH_API_KEY ? "Yes" : "No"}\n`);
 });

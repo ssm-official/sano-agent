@@ -3,62 +3,41 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SANO — AI Agent</title>
+  <title>SANO</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css">
-  <!-- Privy SDK -->
-  <script src="https://cdn.privy.io/privy-js-sdk@2/dist/umd/privy.min.js"></script>
 </head>
 <body>
-  <!-- Onboarding Overlay -->
-  <div id="onboarding" class="onboarding">
-    <div class="onboarding-content">
-      <div class="onboarding-logo">
-        <div class="logo-icon">S</div>
+
+  <!-- Auth Screen -->
+  <div id="auth-screen" class="auth-screen">
+    <div class="auth-container">
+      <div class="auth-brand">
+        <div class="auth-logo">S</div>
         <h1>SANO</h1>
-        <p class="tagline">Shop, trade, and execute — all from chat.</p>
+      </div>
+      <p class="auth-subtitle">Shop, book, trade, and pay — just by asking.</p>
+
+      <div class="auth-box" id="auth-box">
+        <div id="auth-step-email" class="auth-step">
+          <label for="auth-email">Email address</label>
+          <input type="email" id="auth-email" placeholder="you@email.com" autocomplete="email">
+          <button id="auth-submit" class="btn-primary">Continue</button>
+        </div>
+
+        <div id="auth-step-code" class="auth-step hidden">
+          <p class="auth-code-msg">We sent a code to <strong id="auth-email-display"></strong></p>
+          <label for="auth-code">Verification code</label>
+          <input type="text" id="auth-code" placeholder="123456" maxlength="6" autocomplete="one-time-code">
+          <button id="auth-verify" class="btn-primary">Sign in</button>
+          <button id="auth-back" class="btn-text">Use a different email</button>
+        </div>
+
+        <div id="auth-error" class="auth-error hidden"></div>
       </div>
 
-      <div class="onboarding-steps">
-        <div class="step">
-          <div class="step-num">1</div>
-          <div class="step-text">
-            <strong>Create your agent</strong>
-            <span>Connect your Solana wallet or sign in with email. SANO creates an embedded wallet funded with USDC.</span>
-          </div>
-        </div>
-        <div class="step">
-          <div class="step-num">2</div>
-          <div class="step-text">
-            <strong>Tell it what you want</strong>
-            <span>"Find me AirPods under $200", "Swap 50 USDC to SOL", "Book a flight to NYC"</span>
-          </div>
-        </div>
-        <div class="step">
-          <div class="step-num">3</div>
-          <div class="step-text">
-            <strong>SANO executes</strong>
-            <span>Searches, compares, and pays with USDC from your wallet. Flights, tokens, stocks, DeFi — all of it.</span>
-          </div>
-        </div>
-      </div>
-
-      <div class="onboarding-actions">
-        <button id="btn-privy-login" class="btn btn-primary btn-lg">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="6" width="20" height="14" rx="2"/><path d="M2 10h20"/><path d="M16 14h2"/></svg>
-          Sign In / Connect Wallet
-        </button>
-      </div>
-
-      <div class="onboarding-tools">
-        <p>30+ tools under the hood</p>
-        <div class="tool-pills">
-          <span>Amazon</span><span>Shopify</span><span>Jupiter Swaps</span><span>Stocks</span>
-          <span>Flights</span><span>Visa Cards</span><span>DeFi</span><span>Prediction Markets</span>
-          <span>On-chain Payments</span><span>Credit Lines</span><span>Staking</span><span>+19 more</span>
-        </div>
-      </div>
+      <p class="auth-footer">No wallet or crypto knowledge needed. We handle everything.</p>
     </div>
   </div>
 
@@ -67,121 +46,117 @@
     <!-- Sidebar -->
     <aside class="sidebar" id="sidebar">
       <div class="sidebar-header">
-        <div class="logo-mark">S</div>
-        <span class="logo-text">SANO</span>
+        <div class="sidebar-logo">S</div>
+        <span class="sidebar-title">SANO</span>
+        <button id="new-chat" class="btn-icon" title="New chat">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
       </div>
 
-      <button id="new-chat-btn" class="btn btn-ghost sidebar-btn">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
-        New Chat
-      </button>
-
-      <div class="sidebar-section">
-        <div class="sidebar-label">Quick Actions</div>
-        <button class="quick-action" data-prompt="What's my wallet balance?">💰 Wallet Balance</button>
-        <button class="quick-action" data-prompt="Show my portfolio summary">📊 Portfolio</button>
-        <button class="quick-action" data-prompt="Search for the best yield opportunities on Solana">🌱 Find Yield</button>
-        <button class="quick-action" data-prompt="What's the price of SOL right now?">📡 SOL Price</button>
+      <div class="sidebar-balance" id="sidebar-balance">
+        <div class="balance-label">Balance</div>
+        <div class="balance-amount" id="balance-amount">$0.00</div>
+        <button id="add-funds-btn" class="btn-secondary btn-sm">Add funds</button>
       </div>
 
-      <div class="sidebar-section">
-        <div class="sidebar-label">Tools</div>
-        <div class="tool-categories" id="tool-categories"></div>
-      </div>
+      <nav class="sidebar-nav">
+        <div class="nav-label">Quick actions</div>
+        <button class="nav-item" data-prompt="What's my balance?">Check balance</button>
+        <button class="nav-item" data-prompt="Show my recent transactions">Recent activity</button>
+        <button class="nav-item" data-prompt="What are the best savings rates right now?">Earn interest</button>
+        <button class="nav-item" data-prompt="Show me what I can do">All features</button>
+      </nav>
 
-      <div class="sidebar-footer">
-        <div class="wallet-info" id="wallet-info">
-          <div class="wallet-dot"></div>
-          <div class="wallet-details">
-            <span class="wallet-addr" id="wallet-addr">Not connected</span>
-            <span class="wallet-bal" id="wallet-bal">—</span>
+      <div class="sidebar-bottom">
+        <div class="user-info" id="user-info">
+          <div class="user-avatar" id="user-avatar">?</div>
+          <div class="user-details">
+            <span class="user-email" id="user-email">—</span>
           </div>
-          <button id="logout-btn" class="btn btn-icon" title="Disconnect">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+          <button id="sign-out" class="btn-icon" title="Sign out">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
           </button>
         </div>
       </div>
     </aside>
 
-    <!-- Chat Area -->
-    <main class="chat-main">
-      <div class="chat-header">
-        <button id="sidebar-toggle" class="btn btn-icon mobile-only">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
+    <!-- Main Chat -->
+    <main class="chat-area">
+      <header class="chat-header">
+        <button id="menu-toggle" class="btn-icon mobile-only">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
         </button>
-        <div class="chat-header-title">
-          <h2>SANO Agent</h2>
-          <span class="status-badge">
-            <span class="status-dot"></span>
-            Live
-          </span>
+        <div class="chat-header-info">
+          <span class="header-title">SANO</span>
+          <span class="header-status"><span class="status-dot"></span>Ready</span>
         </div>
-        <div class="chat-header-actions">
-          <span class="network-badge" id="network-badge">Solana Mainnet</span>
-          <button id="tools-btn" class="btn btn-ghost btn-sm">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
-            Tools
-          </button>
-        </div>
-      </div>
+      </header>
 
-      <div class="chat-messages" id="chat-messages">
-        <div class="welcome-msg">
-          <div class="welcome-icon">S</div>
-          <h3>Hey, I'm SANO</h3>
-          <p>Your AI agent for shopping, trading, and executing on Solana. Everything is real — live swaps, real payments, actual prices. What can I do for you?</p>
-          <div class="suggestion-grid">
-            <button class="suggestion" data-prompt="Find me the cheapest wireless earbuds on Amazon">
-              <span class="suggestion-icon">🛒</span>
-              <span class="suggestion-text">Find me the cheapest wireless earbuds on Amazon</span>
-            </button>
-            <button class="suggestion" data-prompt="Swap 50 USDC to SOL on Jupiter">
-              <span class="suggestion-icon">🔄</span>
-              <span class="suggestion-text">Swap 50 USDC to SOL</span>
-            </button>
-            <button class="suggestion" data-prompt="Bet $10 on BTC above 100k by end of year">
-              <span class="suggestion-icon">📊</span>
-              <span class="suggestion-text">Bet $10 on BTC above 100k</span>
-            </button>
-            <button class="suggestion" data-prompt="Search flights from LAX to NYC next Friday">
-              <span class="suggestion-icon">✈️</span>
-              <span class="suggestion-text">Search flights LAX → NYC</span>
-            </button>
-            <button class="suggestion" data-prompt="Create a virtual Visa card with $200 for online shopping">
-              <span class="suggestion-icon">💳</span>
-              <span class="suggestion-text">Create a virtual Visa card</span>
-            </button>
-            <button class="suggestion" data-prompt="Stake 10 SOL for the best yield">
-              <span class="suggestion-icon">🌱</span>
-              <span class="suggestion-text">Stake 10 SOL for best yield</span>
-            </button>
+      <div class="chat-messages" id="messages">
+        <div class="welcome" id="welcome">
+          <h2>What can I help you with?</h2>
+          <p>I can shop for products, book travel, send money, trade, and more. Just ask.</p>
+          <div class="suggestions">
+            <button class="suggestion" data-prompt="Find me wireless earbuds under $50">Find wireless earbuds under $50</button>
+            <button class="suggestion" data-prompt="Search flights from LA to New York next Friday">Flights LA to New York</button>
+            <button class="suggestion" data-prompt="Send $25 to alex.sol">Send $25 to a friend</button>
+            <button class="suggestion" data-prompt="What's the price of Bitcoin right now?">Check Bitcoin price</button>
+            <button class="suggestion" data-prompt="I want to earn interest on my balance">Earn interest</button>
+            <button class="suggestion" data-prompt="Create a virtual card with $100 for online shopping">Get a virtual card</button>
           </div>
         </div>
       </div>
 
-      <div class="chat-input-area">
-        <div class="input-container">
-          <textarea id="chat-input" placeholder="Ask SANO anything — shop, swap, trade, book..." rows="1" autofocus></textarea>
-          <button id="send-btn" class="send-btn" disabled>
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M22 2 11 13"/><path d="M22 2 15 22 11 13 2 9z"/></svg>
+      <div class="chat-input-wrap">
+        <div class="chat-input-box">
+          <textarea id="input" placeholder="Ask anything..." rows="1"></textarea>
+          <button id="send" class="send-btn" disabled>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2 11 13"/><path d="M22 2 15 22 11 13 2 9z"/></svg>
           </button>
         </div>
-        <div class="input-footer">
-          <span>Powered by SANO on Solana</span>
-          <span>All transactions in USDC • Live on mainnet</span>
-        </div>
+        <div class="input-hint">Press Enter to send. Shift+Enter for new line.</div>
       </div>
     </main>
+  </div>
 
-    <!-- Tools Panel -->
-    <div class="tools-panel hidden" id="tools-panel">
-      <div class="tools-panel-header">
-        <h3>Available Tools</h3>
-        <button id="close-tools" class="btn btn-icon">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+  <!-- Fund Modal -->
+  <div class="modal-overlay hidden" id="fund-modal">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>Add funds</h3>
+        <button class="btn-icon modal-close" id="fund-modal-close">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M18 6 6 18M6 6l12 12"/></svg>
         </button>
       </div>
-      <div class="tools-panel-body" id="tools-list"></div>
+      <div class="modal-body">
+        <p>Add money to your SANO account using a debit card, credit card, or bank transfer.</p>
+        <div class="fund-options">
+          <button class="fund-option" id="fund-card">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg>
+            <div>
+              <strong>Card or bank</strong>
+              <span>Visa, Mastercard, bank transfer</span>
+            </div>
+          </button>
+          <button class="fund-option" id="fund-crypto">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M12 6v12M8 10h8M8 14h8"/></svg>
+            <div>
+              <strong>Transfer crypto</strong>
+              <span>Send from another wallet</span>
+            </div>
+          </button>
+        </div>
+        <div class="fund-address hidden" id="fund-address-box">
+          <label>Your deposit address</label>
+          <div class="address-copy">
+            <code id="fund-address"></code>
+            <button class="btn-icon" id="copy-address" title="Copy">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            </button>
+          </div>
+          <span class="address-hint">Send USDC (Solana) to this address</span>
+        </div>
+      </div>
     </div>
   </div>
 
