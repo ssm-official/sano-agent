@@ -189,19 +189,18 @@ app.post("/api/auth/verify", async (req, res) => {
   // Get or create user
   let user = users.get(key);
   if (!user) {
-    // Create embedded Solana wallet for this new user
+    // Brand new user — create an embedded Solana wallet
     const keypair = Keypair.generate();
     user = {
       email: key,
       wallet: keypair.publicKey.toBase58(),
-      walletSecret: bs58.encode(keypair.secretKey), // encrypted in production
+      walletSecret: bs58.encode(keypair.secretKey),
       created: new Date().toISOString(),
       agent_name: "SANO"
     };
     users.set(key, user);
     store.saveUsers(users);
 
-    // Initialize the agent's memory file with a profile section
     const initialMemory = `# Memory for ${key}
 
 ## Profile
@@ -212,6 +211,17 @@ app.post("/api/auth/verify", async (req, res) => {
 `;
     store.saveMemory(key, initialMemory);
     console.log(`  [USER] New user: ${key} -> wallet ${user.wallet}`);
+  } else if (!user.walletSecret) {
+    // User was auto-recovered without a secret key (data lost) — give them a fresh wallet
+    // Memory is preserved
+    const keypair = Keypair.generate();
+    user.wallet = keypair.publicKey.toBase58();
+    user.walletSecret = bs58.encode(keypair.secretKey);
+    user.recovered = false;
+    user.wallet_refreshed = new Date().toISOString();
+    users.set(key, user);
+    store.saveUsers(users);
+    console.log(`  [USER] Refreshed wallet for ${key} -> ${user.wallet}`);
   }
 
   // Create auth token
