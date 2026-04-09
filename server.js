@@ -535,7 +535,8 @@ When you learn something new about the user that would be useful to remember (th
     const MAX_LOOPS = userRecord?.sandbox_id ? 30 : 5;
 
     // If user has a sandbox, give the agent computer use capability
-    const computerTool = userRecord?.sandbox_id ? [{
+    const useComputerUse = !!userRecord?.sandbox_id;
+    const computerTool = useComputerUse ? [{
       type: "computer_20250124",
       name: "computer",
       display_width_px: 1280,
@@ -546,14 +547,18 @@ When you learn something new about the user that would be useful to remember (th
     while (loopCount < MAX_LOOPS) {
       loopCount++;
 
-      const stream = anthropic.messages.stream({
+      // Use the beta namespace for computer use (required by the SDK for beta tools)
+      const streamArgs = {
         model: "claude-sonnet-4-20250514",
         max_tokens: 4096,
         system: systemPrompt,
         tools: [...TOOLS, ...computerTool],
-        messages,
-        ...(computerTool.length > 0 ? { betas: ["computer-use-2025-01-24"] } : {})
-      });
+        messages
+      };
+
+      const stream = useComputerUse
+        ? anthropic.beta.messages.stream({ ...streamArgs, betas: ["computer-use-2025-01-24"] })
+        : anthropic.messages.stream(streamArgs);
 
       let currentToolUse = null;
       let toolInputJson = "";
