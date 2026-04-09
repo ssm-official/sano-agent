@@ -192,6 +192,39 @@ $("#sign-out").addEventListener("click", () => {
   $("#auth-code").value = "";
 });
 
+// ─── Backup Key Modal ───
+$("#backup-key-btn").addEventListener("click", async () => {
+  $("#backup-modal").classList.remove("hidden");
+  $("#backup-key-display").textContent = "Loading...";
+  $("#backup-wallet-display").textContent = walletAddress || "—";
+  try {
+    const res = await fetch("/api/wallet/export", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: userEmail })
+    });
+    const data = await res.json();
+    if (data.error) {
+      $("#backup-key-display").textContent = "Error: " + data.error;
+    } else {
+      $("#backup-key-display").textContent = data.private_key;
+      $("#backup-wallet-display").textContent = data.wallet;
+    }
+  } catch (e) {
+    $("#backup-key-display").textContent = "Could not load key";
+  }
+});
+$("#backup-modal-close").addEventListener("click", () => $("#backup-modal").classList.add("hidden"));
+$("#backup-modal").addEventListener("click", e => { if (e.target.id === "backup-modal") $("#backup-modal").classList.add("hidden"); });
+$("#copy-backup-key").addEventListener("click", () => {
+  const key = $("#backup-key-display").textContent;
+  if (key && !key.includes("Error") && !key.includes("Loading")) {
+    navigator.clipboard.writeText(key);
+    $("#copy-backup-key").textContent = "Copied";
+    setTimeout(() => $("#copy-backup-key").textContent = "Copy", 2000);
+  }
+});
+
 // ─── Fund Modal ───
 $("#add-funds-btn").addEventListener("click", () => { $("#fund-modal").classList.remove("hidden"); });
 $("#fund-modal-close").addEventListener("click", () => { $("#fund-modal").classList.add("hidden"); });

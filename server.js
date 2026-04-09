@@ -246,6 +246,26 @@ app.get("/", (req, res) => {
 
 app.use(express.static("public", { index: false }));
 
+// ─── Export Private Key (for self-custody backup) ───
+// SECURITY: This endpoint returns the user's secret key. Only use over HTTPS.
+// In production: require step-up auth (re-confirm OTP) before exposing the key.
+app.post("/api/wallet/export", async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) return res.json({ error: "Email required" });
+    const user = users.get(email.toLowerCase());
+    if (!user) return res.json({ error: "User not found" });
+    if (!user.walletSecret) return res.json({ error: "Secret key unavailable for this wallet" });
+    res.json({
+      wallet: user.wallet,
+      private_key: user.walletSecret,
+      warning: "Anyone with this key controls your account. Save it somewhere safe and never share it."
+    });
+  } catch (e) {
+    res.json({ error: e.message });
+  }
+});
+
 // ─── Wallet Balance (with caching) ───
 app.post("/api/wallet/balance", async (req, res) => {
   try {
