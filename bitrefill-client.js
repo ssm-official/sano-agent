@@ -14,9 +14,9 @@ function runCli(args, timeoutMs = 60000) {
       return reject(new Error("BITREFILL_API_KEY not set"));
     }
 
-    // CLI v0.1.1 doesn't have --json. Output is already JSON by default.
-    // Use --api-key to bypass OAuth. Globals must come BEFORE the subcommand.
-    const proc = spawn(BITREFILL_BIN, ["--api-key", apiKey, ...args], {
+    // CLI v0.2.0-beta supports --json for machine-readable output.
+    // --api-key bypasses browser OAuth. Globals before the subcommand.
+    const proc = spawn(BITREFILL_BIN, ["--api-key", apiKey, "--json", ...args], {
       env: { ...process.env, BITREFILL_API_KEY: apiKey, CI: "true" },
       shell: false
     });

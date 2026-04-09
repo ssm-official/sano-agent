@@ -644,7 +644,26 @@ When you learn something new about the user that would be useful to remember (th
   }
 
   try {
-    let messages = [...cleanHistory];
+    // Strip old screenshots from history — they accumulate fast and blow the context window.
+    // Image content blocks (from computer use tool results) get removed from past messages.
+    const trimHistoryImages = (msgs) => msgs.map(m => {
+      if (!Array.isArray(m.content)) return m;
+      return {
+        ...m,
+        content: m.content.map(block => {
+          if (block.type === "tool_result" && Array.isArray(block.content)) {
+            return {
+              ...block,
+              content: block.content.map(c =>
+                c.type === "image" ? { type: "text", text: "[screenshot from earlier — no longer shown]" } : c
+              )
+            };
+          }
+          return block;
+        })
+      };
+    });
+    let messages = trimHistoryImages([...cleanHistory]);
     let fullResponse = "";
     let toolResults = [];
     let loopCount = 0;
@@ -865,6 +884,32 @@ When you learn something new about the user that would be useful to remember (th
         }
         fullResponse += textContent;
         toolResults = [];
+
+        // Keep only the last 2 screenshots in the messages array.
+        // Older screenshots get replaced with text placeholders to prevent
+        // the prompt from blowing past the 200K token limit during long
+        // computer-use sessions.
+        let imageCount = 0;
+        for (let i = messages.length - 1; i >= 0; i--) {
+          const m = messages[i];
+          if (!Array.isArray(m.content)) continue;
+          m.content = m.content.map(block => {
+            if (block.type === "tool_result" && Array.isArray(block.content)) {
+              const newContent = block.content.map(c => {
+                if (c.type === "image") {
+                  imageCount++;
+                  if (imageCount > 2) {
+                    return { type: "text", text: "[older screenshot removed to save context]" };
+                  }
+                }
+                return c;
+              });
+              return { ...block, content: newContent };
+            }
+            return block;
+          });
+        }
+
         if (finalMessage.stop_reason === "end_turn") break;
       } else {
         fullResponse += textContent;
