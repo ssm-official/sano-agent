@@ -28,12 +28,19 @@ function loadUsers() {
   }
 }
 
-// Save users to disk
+// Atomic write helper
+function atomicWrite(filePath, content) {
+  const tmp = filePath + ".tmp";
+  fs.writeFileSync(tmp, content);
+  fs.renameSync(tmp, filePath);
+}
+
+// Save users to disk (atomic)
 function saveUsers(usersMap) {
   ensureDirs();
   try {
     const obj = Object.fromEntries(usersMap);
-    fs.writeFileSync(USERS_FILE, JSON.stringify(obj, null, 2));
+    atomicWrite(USERS_FILE, JSON.stringify(obj, null, 2));
   } catch (e) {
     console.error("[STORE] Failed to save users:", e.message);
   }
@@ -74,7 +81,14 @@ function loadMemory(email) {
 function saveMemory(email, content) {
   ensureDirs();
   try {
-    fs.writeFileSync(getMemoryPath(email), content);
+    // Soft cap memory at 50KB to prevent runaway growth
+    const MAX_BYTES = 50 * 1024;
+    if (content.length > MAX_BYTES) {
+      // Keep the profile section + most recent notes
+      const lines = content.split("\n");
+      content = lines.slice(0, 200).join("\n") + "\n\n... (older notes pruned to stay under size limit) ...\n";
+    }
+    atomicWrite(getMemoryPath(email), content);
   } catch (e) {
     console.error("[STORE] Failed to save memory:", e.message);
   }

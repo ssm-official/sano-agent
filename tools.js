@@ -196,6 +196,54 @@ const TOOLS = [
     }
   },
 
+  // ─── CREDENTIALS (encrypted vault for site logins) ───
+  {
+    name: "save_credential",
+    description: "Save a website login (username + password) to the user's encrypted credentials vault. Use this when the user shares login info for a site they want you to access. The data is encrypted end-to-end.",
+    input_schema: {
+      type: "object",
+      properties: {
+        site: { type: "string", description: "The website (e.g. 'amazon.com', 'tokopedia.com')" },
+        username: { type: "string", description: "The username or email used to log in" },
+        password: { type: "string", description: "The password" },
+        notes: { type: "string", description: "Any notes (e.g. 'has 2FA', 'use guest checkout')" }
+      },
+      required: ["site", "username", "password"]
+    }
+  },
+  {
+    name: "get_credential",
+    description: "Retrieve saved credentials for a website. Use this when you need to log into a site on the user's behalf.",
+    input_schema: {
+      type: "object",
+      properties: {
+        site: { type: "string", description: "The website to look up" }
+      },
+      required: ["site"]
+    }
+  },
+  {
+    name: "list_credentials",
+    description: "List all sites the user has saved credentials for (without showing passwords). Use this when the user asks what accounts you have access to.",
+    input_schema: {
+      type: "object",
+      properties: {},
+      required: []
+    }
+  },
+  {
+    name: "delete_credential",
+    description: "Remove saved credentials for a site.",
+    input_schema: {
+      type: "object",
+      properties: {
+        site: { type: "string" },
+        username: { type: "string", description: "Optional, if multiple accounts on same site" }
+      },
+      required: ["site"]
+    }
+  },
+
   // ─── MEMORY (per-user persistent agent memory) ───
   {
     name: "remember",

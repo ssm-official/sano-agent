@@ -13,6 +13,16 @@ const bs58 = require("bs58").default || require("bs58");
 const store = require("./agent-store");
 const sandbox = require("./sandbox-manager");
 const vault = require("./wallet-vault");
+const credentialsVault = require("./credentials-vault");
+
+// Per-user mutex queue (prevents concurrent chat handling for same user)
+const userLocks = new Map(); // email -> Promise chain
+function withUserLock(email, fn) {
+  const prev = userLocks.get(email) || Promise.resolve();
+  const next = prev.then(fn).catch(e => { console.error("[LOCK]", e); throw e; });
+  userLocks.set(email, next.catch(() => {}));
+  return next;
+}
 
 const app = express();
 app.set("trust proxy", 1); // Trust Railway's reverse proxy
@@ -140,21 +150,39 @@ async function sendOTP(email, code) {
   return true;
 }
 
+// Per-email OTP rate limit (prevents abuse)
+const otpRequests = new Map(); // email -> [timestamps]
+function checkOtpRateLimit(email) {
+  const now = Date.now();
+  const window = 60 * 60 * 1000; // 1 hour
+  const maxRequests = 5;
+  const reqs = (otpRequests.get(email) || []).filter(t => now - t < window);
+  if (reqs.length >= maxRequests) return false;
+  reqs.push(now);
+  otpRequests.set(email, reqs);
+  return true;
+}
+
 // Auth: Start (send OTP)
 app.post("/api/auth/start", async (req, res) => {
   const { email } = req.body;
-  if (!email || !email.includes("@")) {
+  if (!email || !email.includes("@") || email.length > 200) {
     return res.json({ error: "Valid email required." });
+  }
+  const key = email.toLowerCase().trim();
+
+  if (!checkOtpRateLimit(key)) {
+    return res.json({ error: "Too many code requests. Wait an hour and try again." });
   }
 
   const code = generateOTP();
-  pendingAuth.set(email.toLowerCase(), {
+  pendingAuth.set(key, {
     code,
     expires: Date.now() + 10 * 60 * 1000, // 10 min
     attempts: 0
   });
 
-  await sendOTP(email.toLowerCase(), code);
+  await sendOTP(key, code);
   res.json({ ok: true, message: "Code sent." });
 });
 
@@ -256,6 +284,65 @@ app.get("/", (req, res) => {
 });
 
 app.use(express.static("public", { index: false }));
+
+// ─── Account: Export all data (GDPR-style download) ───
+app.post("/api/account/export", async (req, res) => {
+  try {
+    const { email } = req.body;
+    const key = email?.toLowerCase();
+    if (!key) return res.json({ error: "Email required" });
+    const user = users.get(key);
+    if (!user) return res.json({ error: "User not found" });
+
+    const wallet = vault.exportSecret(key);
+    const memory = store.loadMemory(key);
+    const creds = credentialsVault.list(key);
+
+    res.json({
+      email: key,
+      wallet,
+      memory,
+      saved_logins: creds, // no passwords in export by default
+      account: {
+        created: user.created,
+        agent_name: user.agent_name
+      },
+      exported_at: new Date().toISOString()
+    });
+  } catch (e) {
+    res.json({ error: e.message });
+  }
+});
+
+// ─── Account: Delete everything ───
+app.post("/api/account/delete", async (req, res) => {
+  try {
+    const { email, confirm } = req.body;
+    if (confirm !== "DELETE") return res.json({ error: "Confirmation phrase required" });
+    const key = email?.toLowerCase();
+    if (!key) return res.json({ error: "Email required" });
+
+    // Delete vault, memory, credentials, user record
+    const fs = require("fs");
+    const dataDir = process.env.DATA_DIR || path.join(__dirname, "data");
+    const safe = key.replace(/[^a-z0-9@.]/g, "_");
+
+    [
+      path.join(dataDir, "wallets", safe + ".vault"),
+      path.join(dataDir, "memory", safe + ".md"),
+      path.join(dataDir, "credentials", safe + ".creds")
+    ].forEach(f => {
+      try { if (fs.existsSync(f)) fs.unlinkSync(f); } catch (e) {}
+    });
+
+    users.delete(key);
+    store.saveUsers(users);
+    console.log(`  [ACCOUNT] Deleted everything for ${key}`);
+    res.json({ status: "deleted", email: key });
+  } catch (e) {
+    res.json({ error: e.message });
+  }
+});
 
 // ─── Export Private Key (for self-custody backup) ───
 app.post("/api/wallet/export", async (req, res) => {
@@ -390,6 +477,11 @@ IMPORTANT:
 - After a successful transaction, mention the new balance or suggest checking it
 - You are a REAL agent that executes transactions. Swaps and payments happen for real on the Solana blockchain. Treat them seriously — always confirm amounts with the user before executing
 
+SAVED LOGINS — YOU REMEMBER PASSWORDS:
+You have an encrypted credentials vault per user. When the user shares site login info ("my Amazon login is X / Y"), call save_credential to store it. When you need to log into a site for them, call get_credential first to retrieve the saved login. If you don't have credentials for a site they ask you to use, ask them to share the login (and remind them you'll save it encrypted so they don't need to share it again).
+
+NEVER reveal passwords in chat unless the user explicitly asks "what's my password for X". Don't quote passwords in your text replies.
+
 COMPUTER USE — YOU HAVE A REAL COMPUTER:
 You have access to a real Linux desktop with a browser via the "computer" tool. You can take screenshots, click, type, scroll — anything a human can do on a computer. Use this to:
 - Browse any website (Tokopedia, Shopee, Amazon, eBay, anywhere)
@@ -413,6 +505,13 @@ Resolution: 1280x800. Browser: Firefox.`;
 app.post("/api/chat", async (req, res) => {
   const { message, sessionId, walletAddress, userEmail: clientEmail } = req.body;
   const sid = sessionId || uuidv4();
+
+  // Concurrency protection: serialize chats per user so memory writes don't race
+  const lockKey = clientEmail?.toLowerCase() || walletAddress || sid;
+  return withUserLock(lockKey, () => handleChat(req, res, message, sid, walletAddress, clientEmail));
+});
+
+async function handleChat(req, res, message, sid, walletAddress, clientEmail) {
 
   // Resolve userEmail: prefer the email sent by client, fall back to wallet lookup
   let userEmail = clientEmail?.toLowerCase() || null;
@@ -724,7 +823,7 @@ When you learn something new about the user that would be useful to remember (th
     res.write(`data: ${JSON.stringify({ type: "error", message: err.message })}\n\n`);
     res.end();
   }
-});
+}
 
 // ─── Tool list for UI ───
 app.get("/api/tools", (req, res) => {

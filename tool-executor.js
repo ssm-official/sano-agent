@@ -12,6 +12,7 @@ const { getAssociatedTokenAddress, createTransferInstruction, TOKEN_PROGRAM_ID }
 const SOLANA_RPC = process.env.SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com";
 const connection = new Connection(SOLANA_RPC, "confirmed");
 const bitrefill = require("./bitrefill-client");
+const credentials = require("./credentials-vault");
 
 const MINTS = {
   SOL: "So11111111111111111111111111111111111111112",
@@ -800,6 +801,61 @@ const EXECUTORS = {
       };
     } catch (e) {
       return { error: "Couldn't load merchants right now." };
+    }
+  },
+
+  // ─── CREDENTIALS: Encrypted site logins ───
+  save_credential: async (input, walletAddress, keypair, context) => {
+    if (!context?.userEmail) return { error: "Sign in first." };
+    try {
+      credentials.set(context.userEmail, input.site, input.username, input.password, input.notes || "");
+      return {
+        status: "saved",
+        site: input.site,
+        username: input.username,
+        message: `Saved login for ${input.site}. I won't show the password again — it's encrypted.`
+      };
+    } catch (e) {
+      return { error: "Couldn't save credential: " + e.message };
+    }
+  },
+
+  get_credential: async (input, walletAddress, keypair, context) => {
+    if (!context?.userEmail) return { error: "Sign in first." };
+    try {
+      const found = credentials.get(context.userEmail, input.site);
+      if (found.length === 0) return { error: `No saved credentials for ${input.site}.` };
+      return {
+        site: input.site,
+        accounts: found.map(c => ({
+          username: c.username,
+          password: c.password,
+          notes: c.notes,
+          updated: c.updated
+        }))
+      };
+    } catch (e) {
+      return { error: "Couldn't load credential: " + e.message };
+    }
+  },
+
+  list_credentials: async (input, walletAddress, keypair, context) => {
+    if (!context?.userEmail) return { error: "Sign in first." };
+    try {
+      const list = credentials.list(context.userEmail);
+      return { count: list.length, credentials: list };
+    } catch (e) {
+      return { error: "Couldn't list credentials." };
+    }
+  },
+
+  delete_credential: async (input, walletAddress, keypair, context) => {
+    if (!context?.userEmail) return { error: "Sign in first." };
+    try {
+      const removed = credentials.remove(context.userEmail, input.site, input.username);
+      return { removed, message: removed > 0 ? `Removed ${removed} credential(s) for ${input.site}.` : `No credentials found for ${input.site}.` };
+    } catch (e) {
+      return { error: "Couldn't delete credential." };
     }
   },
 

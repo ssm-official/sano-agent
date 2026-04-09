@@ -11,21 +11,57 @@ const bs58 = require("bs58").default || require("bs58");
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
 const VAULT_DIR = path.join(DATA_DIR, "wallets");
 
-// Master key derived from env. In production, set WALLET_MASTER_KEY explicitly
-// (32 bytes, base64-encoded). For dev, derive from ANTHROPIC_API_KEY.
+// Master key handling:
+// 1. If WALLET_MASTER_KEY env var is set, use it (production)
+// 2. Otherwise, look for a persisted master.key file in the data dir
+// 3. Otherwise, generate a new one and persist it
+// This means master key survives restarts but you can also override via env.
+let cachedMasterKey = null;
+
 function getMasterKey() {
+  if (cachedMasterKey) return cachedMasterKey;
+
   if (process.env.WALLET_MASTER_KEY) {
     const buf = Buffer.from(process.env.WALLET_MASTER_KEY, "base64");
-    if (buf.length !== 32) throw new Error("WALLET_MASTER_KEY must be 32 bytes base64");
+    if (buf.length !== 32) {
+      throw new Error("WALLET_MASTER_KEY must be 32 bytes base64. Generate one with: node -e \"console.log(require('crypto').randomBytes(32).toString('base64'))\"");
+    }
+    cachedMasterKey = buf;
     return buf;
   }
-  // Dev fallback: derive from a stable secret
-  const seed = process.env.ANTHROPIC_API_KEY || "sano-dev-fallback";
-  return crypto.createHash("sha256").update(seed).digest();
+
+  // Persist a key in the data directory
+  const dataDir = process.env.DATA_DIR || path.join(__dirname, "data");
+  if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+  const keyFile = path.join(dataDir, "master.key");
+
+  if (fs.existsSync(keyFile)) {
+    const buf = Buffer.from(fs.readFileSync(keyFile, "utf-8").trim(), "base64");
+    if (buf.length === 32) {
+      cachedMasterKey = buf;
+      return buf;
+    }
+  }
+
+  // Generate and save a new one
+  const newKey = crypto.randomBytes(32);
+  fs.writeFileSync(keyFile, newKey.toString("base64"));
+  fs.chmodSync(keyFile, 0o600);
+  console.warn("\n  [VAULT] Generated new master key at " + keyFile);
+  console.warn("  [VAULT] BACK THIS UP. If lost, all wallets become unrecoverable.\n");
+  cachedMasterKey = newKey;
+  return newKey;
 }
 
 function ensureVault() {
   if (!fs.existsSync(VAULT_DIR)) fs.mkdirSync(VAULT_DIR, { recursive: true });
+}
+
+// Atomic write: write to .tmp then rename (POSIX guarantees rename is atomic)
+function atomicWrite(filePath, content) {
+  const tmp = filePath + ".tmp";
+  fs.writeFileSync(tmp, content);
+  fs.renameSync(tmp, filePath);
 }
 
 function emailToFilename(email) {
@@ -74,7 +110,7 @@ function createWallet(email) {
     email: email.toLowerCase()
   };
 
-  fs.writeFileSync(path.join(VAULT_DIR, emailToFilename(email)), JSON.stringify(payload, null, 2));
+  atomicWrite(path.join(VAULT_DIR, emailToFilename(email)), JSON.stringify(payload, null, 2));
   return { publicKey, secretKey };
 }
 
@@ -140,7 +176,7 @@ function importWallet(email, secretKey) {
     email: email.toLowerCase(),
     imported: true
   };
-  fs.writeFileSync(path.join(VAULT_DIR, emailToFilename(email)), JSON.stringify(payload, null, 2));
+  atomicWrite(path.join(VAULT_DIR, emailToFilename(email)), JSON.stringify(payload, null, 2));
   return keypair.publicKey.toBase58();
 }
 
@@ -150,5 +186,6 @@ module.exports = {
   getKeypair,
   exportSecret,
   hasWallet,
-  importWallet
+  importWallet,
+  _getMasterKey: getMasterKey  // exported for credentials-vault to share
 };
