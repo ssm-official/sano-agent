@@ -3,69 +3,39 @@
 const TOOLS = [
   // ─── SHOPPING ───
   {
-    name: "amazon_search",
-    description: "Search Amazon's 1B+ product catalog. Returns top results with prices, ratings, reviews, and Prime eligibility.",
+    name: "product_search",
+    description: "Search for products across all stores — Google Shopping results include Amazon, Walmart, Target, Best Buy, eBay, and more. Use this for general product searches. Returns prices, ratings, store names, and links.",
     input_schema: {
       type: "object",
       properties: {
-        query: { type: "string", description: "Search query (e.g. 'wireless earbuds under $50')" },
-        sort_by: { type: "string", enum: ["relevance", "price_low", "price_high", "rating", "reviews"], default: "relevance" },
+        query: { type: "string", description: "What to search for (e.g. 'wireless earbuds under $50', 'Nike Air Max size 10')" },
         max_price: { type: "number", description: "Maximum price in USD" },
-        min_rating: { type: "number", description: "Minimum star rating (1-5)" },
-        prime_only: { type: "boolean", default: false }
+        sort_by: { type: "string", enum: ["relevance", "price_low", "price_high", "rating"], default: "relevance" }
       },
       required: ["query"]
     }
   },
   {
-    name: "amazon_purchase",
-    description: "Purchase a product from Amazon using USDC from the user's wallet. Handles checkout, shipping address, and payment.",
+    name: "amazon_search",
+    description: "Search specifically on Amazon. Only use this when the user explicitly mentions Amazon. Returns prices, ratings, reviews, and Prime eligibility.",
     input_schema: {
       type: "object",
       properties: {
-        product_id: { type: "string", description: "Amazon product ASIN" },
-        quantity: { type: "integer", default: 1 },
-        shipping_speed: { type: "string", enum: ["standard", "expedited", "one_day", "same_day"], default: "standard" }
+        query: { type: "string", description: "Search query" },
+        max_price: { type: "number", description: "Maximum price in USD" },
+        sort_by: { type: "string", enum: ["relevance", "price_low", "price_high", "rating"], default: "relevance" }
       },
-      required: ["product_id"]
+      required: ["query"]
     }
   },
   {
     name: "shopify_search",
-    description: "Search across Shopify stores for products. Great for indie brands, niche items, and DTC products.",
+    description: "Search a specific Shopify store for products. Use when the user provides a store URL or asks about a specific brand's Shopify store.",
     input_schema: {
       type: "object",
       properties: {
         query: { type: "string" },
-        category: { type: "string" },
-        max_price: { type: "number" },
-        store_url: { type: "string", description: "Optional: search a specific Shopify store" }
-      },
-      required: ["query"]
-    }
-  },
-  {
-    name: "shopify_purchase",
-    description: "Purchase from a Shopify store using USDC.",
-    input_schema: {
-      type: "object",
-      properties: {
-        product_id: { type: "string" },
-        variant_id: { type: "string" },
-        quantity: { type: "integer", default: 1 },
-        store_url: { type: "string" }
-      },
-      required: ["product_id", "store_url"]
-    }
-  },
-  {
-    name: "price_compare",
-    description: "Compare prices for a product across Amazon, Shopify, and other retailers to find the best deal.",
-    input_schema: {
-      type: "object",
-      properties: {
-        query: { type: "string", description: "Product to compare" },
-        product_ids: { type: "array", items: { type: "string" }, description: "Specific product IDs to compare" }
+        store_url: { type: "string", description: "The Shopify store URL (e.g. allbirds.com, gymshark.com)" }
       },
       required: ["query"]
     }
@@ -459,7 +429,7 @@ const TOOLS = [
 
 // Tool category mapping for UI
 const TOOL_CATEGORIES = {
-  "Shopping": ["amazon_search", "amazon_purchase", "shopify_search", "shopify_purchase", "price_compare"],
+  "Shopping": ["product_search", "amazon_search", "shopify_search"],
   "Token Swaps": ["jupiter_swap", "jupiter_quote", "token_price", "limit_order"],
   "Stocks & ETFs": ["stock_trade", "stock_quote"],
   "Prediction Markets": ["prediction_bet", "prediction_search"],

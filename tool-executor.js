@@ -254,96 +254,172 @@ const EXECUTORS = {
     };
   },
 
-  // ─── Amazon Product Search ───
+  // ─── General Product Search (Google Shopping — all stores) ───
+  product_search: async (input) => {
+    const searchApiKey = process.env.SEARCH_API_KEY;
+    if (!searchApiKey) return { error: "Product search is not available right now." };
+
+    try {
+      const params = new URLSearchParams({
+        api_key: searchApiKey,
+        search_type: "shopping",
+        q: input.query
+      });
+
+      const res = await fetch(`https://api.scaleserp.com/search?${params}`);
+      const data = await res.json();
+
+      if (data.request_info?.success === false) {
+        console.log("  [SEARCH] ScaleSERP error:", JSON.stringify(data.request_info));
+        return { error: `No results found for "${input.query}". Try different words.` };
+      }
+
+      const results = data.shopping_results || [];
+      if (results.length === 0) {
+        return { error: `No products found for "${input.query}". Try a broader search.` };
+      }
+
+      let mapped = results.slice(0, 10).map(p => ({
+        title: p.title,
+        price: p.price || p.extracted_price ? "$" + p.extracted_price : "See listing",
+        extracted_price: p.extracted_price || null,
+        store: p.source || p.merchant || "Unknown store",
+        rating: p.rating || null,
+        reviews: p.reviews || null,
+        url: p.link || null,
+        image: p.image || null,
+        delivery: p.delivery || null
+      }));
+
+      // Filter by max price if specified
+      if (input.max_price) {
+        const filtered = mapped.filter(r => r.extracted_price && r.extracted_price <= input.max_price);
+        if (filtered.length > 0) mapped = filtered;
+      }
+
+      // Sort
+      if (input.sort_by === "price_low") {
+        mapped.sort((a, b) => (a.extracted_price || 9999) - (b.extracted_price || 9999));
+      } else if (input.sort_by === "price_high") {
+        mapped.sort((a, b) => (b.extracted_price || 0) - (a.extracted_price || 0));
+      }
+
+      return { results: mapped, query: input.query, total_found: results.length, source: "google_shopping" };
+    } catch (e) {
+      console.log("  [SEARCH] Error:", e.message);
+      return { error: "Product search failed. Try again." };
+    }
+  },
+
+  // ─── Amazon-Specific Search ───
   amazon_search: async (input) => {
     const searchApiKey = process.env.SEARCH_API_KEY;
+    if (!searchApiKey) return { error: "Amazon search is not available right now." };
 
-    if (searchApiKey) {
-      try {
-        const params = new URLSearchParams({
+    try {
+      // Use Google Shopping filtered to Amazon
+      const params = new URLSearchParams({
+        api_key: searchApiKey,
+        search_type: "shopping",
+        q: `${input.query} site:amazon.com`
+      });
+
+      const res = await fetch(`https://api.scaleserp.com/search?${params}`);
+      const data = await res.json();
+
+      if (data.request_info?.success === false) {
+        console.log("  [SEARCH] Amazon search error:", JSON.stringify(data.request_info));
+        // Fallback: try without site filter
+        const fallbackParams = new URLSearchParams({
           api_key: searchApiKey,
-          engine: "amazon",
-          amazon_domain: "amazon.com",
-          search_term: input.query,
-          sort_by: input.sort_by === "price_low" ? "price-asc-rank" : input.sort_by === "price_high" ? "price-desc-rank" : "relevanceblender"
+          search_type: "shopping",
+          q: `amazon ${input.query}`
+        });
+        const fallbackRes = await fetch(`https://api.scaleserp.com/search?${fallbackParams}`);
+        const fallbackData = await fallbackRes.json();
+        const fallbackResults = (fallbackData.shopping_results || [])
+          .filter(p => (p.source || "").toLowerCase().includes("amazon"));
+
+        if (fallbackResults.length > 0) {
+          return {
+            results: fallbackResults.slice(0, 8).map(p => ({
+              title: p.title,
+              price: p.price || (p.extracted_price ? "$" + p.extracted_price : "See listing"),
+              rating: p.rating || null, reviews: p.reviews || null,
+              url: p.link || null, store: "Amazon"
+            })),
+            query: input.query, source: "amazon"
+          };
+        }
+      }
+
+      const results = (data.shopping_results || [])
+        .filter(p => {
+          const src = (p.source || "").toLowerCase();
+          return src.includes("amazon") || src.includes("amzn");
         });
 
-        const res = await fetch(`https://api.scaleserp.com/search?${params}`);
-        const data = await res.json();
-
-        // ScaleSERP returns different keys depending on the engine
-        const results = data.amazon_results || data.organic_results || data.shopping_results || [];
-        if (results.length > 0) {
-          const mapped = results.slice(0, 8).map(p => ({
-            title: p.title,
-            price: p.price?.raw || p.price || "See listing",
-            rating: p.rating || null,
-            reviews: p.total_reviews || p.reviews || null,
-            asin: p.asin || null,
-            url: p.link || p.url || null,
-            prime: p.is_prime || false,
-            image: p.image || null
-          }));
-
-          if (input.max_price) {
-            const filtered = mapped.filter(r => {
-              const p = parseFloat(String(r.price).replace(/[^0-9.]/g, ""));
-              return !isNaN(p) && p <= input.max_price;
-            });
-            return { results: filtered.length > 0 ? filtered : mapped, query: input.query, source: "amazon" };
-          }
-          return { results: mapped, query: input.query, source: "amazon" };
+      if (results.length === 0) {
+        // Return all results if no Amazon-specific ones found
+        const allResults = data.shopping_results || [];
+        if (allResults.length > 0) {
+          return {
+            results: allResults.slice(0, 8).map(p => ({
+              title: p.title,
+              price: p.price || (p.extracted_price ? "$" + p.extracted_price : "See listing"),
+              rating: p.rating || null, reviews: p.reviews || null,
+              url: p.link || null, store: p.source || "Various"
+            })),
+            query: input.query, note: "Showing results from multiple stores (Amazon results not available for this search).",
+            source: "google_shopping"
+          };
         }
-
-        // If no results in expected format, return raw for debugging
-        if (data.request_info?.success === false) {
-          console.log("  [SEARCH] ScaleSERP error:", data.request_info);
-          return { error: `Search returned no results for "${input.query}". Try a different search term.` };
-        }
-      } catch (e) {
-        console.log("  [SEARCH] Error:", e.message);
+        return { error: `No Amazon results for "${input.query}". Try searching all stores instead.` };
       }
+
+      let mapped = results.slice(0, 8).map(p => ({
+        title: p.title,
+        price: p.price || (p.extracted_price ? "$" + p.extracted_price : "See listing"),
+        extracted_price: p.extracted_price || null,
+        rating: p.rating || null, reviews: p.reviews || null,
+        url: p.link || null, store: "Amazon",
+        delivery: p.delivery || null
+      }));
+
+      if (input.max_price) {
+        const filtered = mapped.filter(r => r.extracted_price && r.extracted_price <= input.max_price);
+        if (filtered.length > 0) mapped = filtered;
+      }
+
+      return { results: mapped, query: input.query, source: "amazon" };
+    } catch (e) {
+      console.log("  [SEARCH] Amazon error:", e.message);
+      return { error: "Amazon search failed. Try searching all stores instead." };
     }
-
-    return { error: `Product search is not available right now. Try again later.` };
   },
 
-  amazon_purchase: async (input) => {
-    return {
-      status: "coming_soon",
-      message: `Found the product. Direct Amazon checkout is coming soon. For now, you can use the link to buy it on Amazon directly.`,
-      product_id: input.product_id
-    };
-  },
-
+  // ─── Shopify Store Search ───
   shopify_search: async (input) => {
-    if (input.store_url) {
-      try {
-        const url = input.store_url.includes("http") ? input.store_url : `https://${input.store_url}`;
-        const res = await fetch(`${url}/search/suggest.json?q=${encodeURIComponent(input.query)}&resources[type]=product`);
-        const data = await res.json();
-        const products = data.resources?.results?.products || [];
-        return {
-          results: products.map(p => ({
-            title: p.title, price: p.price,
-            url: `${url}${p.url}`, image: p.image
-          })),
-          store: input.store_url, source: "shopify"
-        };
-      } catch (e) {
-        return { error: `Couldn't search that store. Make sure the URL is correct.` };
-      }
+    if (!input.store_url) {
+      return { message: `I need a store URL to search Shopify. For example: "search allbirds.com for running shoes"` };
     }
-    return { message: `To search a Shopify store, I need the store URL. For example: "search cool-store.myshopify.com for sneakers"`, query: input.query };
-  },
-
-  shopify_purchase: async () => {
-    return { status: "coming_soon", message: "Direct Shopify checkout is coming soon." };
-  },
-
-  price_compare: async (input) => {
-    const results = await EXECUTORS.amazon_search({ query: input.query });
-    return { query: input.query, ...results };
+    try {
+      let url = input.store_url;
+      if (!url.includes("http")) url = `https://${url}`;
+      const res = await fetch(`${url}/search/suggest.json?q=${encodeURIComponent(input.query)}&resources[type]=product`);
+      const data = await res.json();
+      const products = data.resources?.results?.products || [];
+      if (products.length === 0) return { message: `No results for "${input.query}" on ${input.store_url}.` };
+      return {
+        results: products.map(p => ({
+          title: p.title, price: p.price ? "$" + p.price : null,
+          url: `${url}${p.url}`, image: p.image
+        })),
+        store: input.store_url, source: "shopify"
+      };
+    } catch (e) {
+      return { error: `Couldn't search that store. Make sure the URL is correct.` };
+    }
   },
 
   // ─── Limit Orders ───
