@@ -542,12 +542,35 @@ async function handleChat(req, res, message, sid, walletAddress, clientEmail) {
     }
   }
 
+  // Validate user message — never push empty/invalid content to history
+  if (!message || typeof message !== "string" || !message.trim()) {
+    res.setHeader("Content-Type", "text/event-stream");
+    res.write(`data: ${JSON.stringify({ type: "error", message: "Empty message" })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: "done", sessionId: sid })}\n\n`);
+    return res.end();
+  }
+
   if (!sessions.has(sid)) sessions.set(sid, []);
   const history = sessions.get(sid);
-  history.push({ role: "user", content: message });
+
+  // Sanitize the existing history: drop any messages with empty/missing content
+  // (defensive — old broken history from previous failed requests would corrupt the API call)
+  const sanitizedHistory = history.filter(m => {
+    if (!m || !m.role) return false;
+    if (m.content === null || m.content === undefined) return false;
+    if (typeof m.content === "string" && m.content.trim() === "") return false;
+    if (Array.isArray(m.content) && m.content.length === 0) return false;
+    return true;
+  });
+  if (sanitizedHistory.length !== history.length) {
+    console.log(`  [HISTORY] Dropped ${history.length - sanitizedHistory.length} corrupted messages from session ${sid}`);
+    sessions.set(sid, sanitizedHistory);
+  }
+  const cleanHistory = sessions.get(sid);
+  cleanHistory.push({ role: "user", content: message });
 
   // Limit history to last 20 messages to control costs
-  if (history.length > 40) history.splice(0, history.length - 40);
+  if (cleanHistory.length > 40) cleanHistory.splice(0, cleanHistory.length - 40);
 
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
@@ -591,7 +614,7 @@ When you learn something new about the user that would be useful to remember (th
   }
 
   try {
-    let messages = [...history];
+    let messages = [...cleanHistory];
     let fullResponse = "";
     let toolResults = [];
     let loopCount = 0;
@@ -804,8 +827,13 @@ When you learn something new about the user that would be useful to remember (th
 
       if (hasToolUse) {
         const finalMessage = await stream.finalMessage();
-        messages.push({ role: "assistant", content: finalMessage.content });
-        messages.push({ role: "user", content: toolResults });
+        // Validate before pushing — Anthropic requires non-empty content
+        if (finalMessage.content && finalMessage.content.length > 0) {
+          messages.push({ role: "assistant", content: finalMessage.content });
+        }
+        if (toolResults.length > 0) {
+          messages.push({ role: "user", content: toolResults });
+        }
         fullResponse += textContent;
         toolResults = [];
         if (finalMessage.stop_reason === "end_turn") break;
@@ -815,12 +843,20 @@ When you learn something new about the user that would be useful to remember (th
       }
     }
 
-    history.push({ role: "assistant", content: fullResponse });
+    // Only persist non-empty assistant responses to history
+    if (fullResponse && fullResponse.trim()) {
+      cleanHistory.push({ role: "assistant", content: fullResponse });
+    }
     res.write(`data: ${JSON.stringify({ type: "done", sessionId: sid })}\n\n`);
     res.end();
   } catch (err) {
     console.error("Chat error:", err.message);
+    // Drop the failed user message from history so the next request doesn't repeat the failure
+    if (cleanHistory && cleanHistory.length > 0 && cleanHistory[cleanHistory.length - 1]?.role === "user") {
+      cleanHistory.pop();
+    }
     res.write(`data: ${JSON.stringify({ type: "error", message: err.message })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: "done", sessionId: sid })}\n\n`);
     res.end();
   }
 }

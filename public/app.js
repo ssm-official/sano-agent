@@ -558,13 +558,14 @@ async function send(text) {
             if (ev.sessionId) { sessionId = ev.sessionId; localStorage.setItem("sano_sid", sessionId); }
             break;
           case "error":
+            started = true; // mark started so the no-response fallback doesn't overwrite this
             textEl.innerHTML = `<span style="color:var(--red)">Something went wrong: ${esc(ev.message)}</span>`;
             break;
         }
       }
     }
 
-    if (!started) textEl.innerHTML = `<span style="color:var(--text-3)">No response.</span>`;
+    if (!started) textEl.innerHTML = `<span style="color:var(--text-3)">No response. Try again or refresh.</span>`;
   } catch (err) {
     textEl.innerHTML = `<span style="color:var(--red)">Connection error. Check that the server is running.</span>`;
   }
