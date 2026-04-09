@@ -57,8 +57,11 @@ function runCli(args, timeoutMs = 60000) {
 
 // ─── High-level wrappers ───
 
-async function searchProducts({ query, country = "US", productType, category, perPage = 10 }) {
+async function searchProducts({ query, country = "US", productType, category, perPage = 15 }) {
   const args = ["search-products", "--query", query, "--country", country, "--per_page", String(perPage)];
+  // Only filter by product_type if explicitly given. Bitrefill carries
+  // gift cards, mobile top-ups, e-wallets (GoPay, OVO, Dana), eSIMs, and more.
+  // Filtering would exclude valid matches.
   if (productType) args.push("--product_type", productType);
   if (category) args.push("--category", category);
   return await runCli(args);

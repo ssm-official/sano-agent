@@ -754,17 +754,18 @@ const EXECUTORS = {
     if (solCheck) return solCheck;
 
     try {
-      // 1. Search for the merchant on Bitrefill
+      // 1. Search Bitrefill for ANY matching product (gift card, subscription,
+      //    mobile top-up, e-wallet, gaming credit, etc.)
       const country = (input.country || "US").toUpperCase();
       const search = await bitrefill.searchProducts({
         query: input.merchant,
-        country,
-        productType: "giftcard"
+        country
+        // No productType filter — covers giftcards, mobile top-ups, e-wallets, eSIMs, etc.
       });
 
       const product = bitrefill.pickBestProduct(search, input.merchant);
       if (!product) {
-        return { error: `Couldn't find ${input.merchant} on Bitrefill. Try a different store.` };
+        return { error: `Couldn't find "${input.merchant}" on Bitrefill. It may not be supported in ${country}, or the name might need to be different.` };
       }
 
       // 2. Get product details to find the right package
@@ -889,7 +890,6 @@ const EXECUTORS = {
       const result = await bitrefill.searchProducts({
         query: input.category || "*",
         country: (input.country || "US").toUpperCase(),
-        productType: "giftcard",
         perPage: 30
       });
       const products = result.products || result.results || [];

@@ -439,18 +439,30 @@ WHAT YOU CAN DO (everything is real, all transactions execute for real):
 - Search prediction markets (Polymarket)
 - Track balances and transactions
 
-SHOPPING — THE CRITICAL FLOW:
-1. User says "buy me wireless earbuds under $50"
-2. Call product_search with their query
-3. The frontend will show product cards automatically — DO NOT repeat the products in text
-4. Just briefly summarize what you found ("Found a few options. Which one do you want?") and let the cards do the work
-5. When the user picks one (or says "the cheapest" / "first one"), call buy_product with:
-   - product_name: the product title
-   - merchant: the store name (e.g. "Amazon", "Walmart", "Tokopedia")
-   - amount_usd: the price
-   - product_url: the link
-6. The buy_product tool charges their USDC and returns a gift card code
-7. Tell the user briefly: "Done. Here's your code." and let the receipt card show the details
+PURCHASING — UNIVERSAL FLOW:
+You can buy/fund/top up basically anything via buy_product. Don't say "I can't" — just try it. Bitrefill carries:
+- Retail products: Amazon, Walmart, Target, Nike, etc. (search with product_search first, then buy_product)
+- Subscriptions: Netflix, Spotify, Hulu, YouTube Premium, Apple Music, Disney+, Apple, Google Play
+- Gaming: Steam, PlayStation, Xbox, Nintendo, Roblox/Robux, Fortnite/V-Bucks, Riot, Genshin, Minecraft
+- E-wallets / mobile money: GCash, GoPay, OVO, Dana, AliPay, Paytm, MercadoPago, M-Pesa, Wise, etc.
+- Mobile top-ups: any carrier worldwide
+- Bill payments and prepaid cards
+- Food delivery: DoorDash, Uber Eats, Grubhub, etc.
+- Travel: Airbnb, Hotels.com, Booking.com, etc.
+
+When the user asks "buy me X" / "top up my Y" / "subscribe to Z" / "get me some W":
+1. JUST CALL buy_product with the merchant name and amount. Don't refuse, don't say it's not possible, don't ask permission.
+2. Pass the country code if they mention a region (PH for Philippines GCash, ID for Indonesian GoPay, BR for Brazilian services, etc.)
+3. If buy_product returns "Couldn't find X", THEN tell the user it's not available and suggest alternatives.
+4. When successful, the receipt card shows the redemption code or top-up confirmation. Don't repeat the details in text.
+
+SHOPPING (physical products):
+1. User: "buy me wireless earbuds under $50"
+2. Call product_search to find options
+3. Frontend shows product cards — DON'T list them in text
+4. User picks one ("the first one" / "the cheapest")
+5. Call buy_product with that merchant and price
+6. Done — receipt card shows the code
 
 STOCK FLOW:
 1. User says "buy $100 of Apple stock"
@@ -761,18 +773,16 @@ When you learn something new about the user that would be useful to remember (th
                   console.log(`  [COMPUTER] Unknown action: ${action}`);
               }
 
-              // Take a screenshot to send back
-              await new Promise(r => setTimeout(r, 300)); // small wait for UI updates
-              const screenshotB64 = await sandbox.takeScreenshot(sbxId);
-
-              // Send screenshot + action label to client for the live preview
+              // Send action label to client immediately (don't wait for screenshot)
               const actionLabel = describeAction(action, toolInput);
               res.write(`data: ${JSON.stringify({
                 type: "computer_action",
                 action,
-                label: actionLabel,
-                screenshot: screenshotB64
+                label: actionLabel
               })}\n\n`);
+
+              // Take screenshot for the model (skip the artificial 300ms wait)
+              const screenshotB64 = await sandbox.takeScreenshot(sbxId);
 
               // Build the tool_result block for Anthropic with the screenshot as image
               resultBlock = {

@@ -17,22 +17,22 @@ const TOOLS = [
   },
   {
     name: "buy_product",
-    description: "AUTONOMOUSLY buy a product the user asked for. This is the main purchasing tool. Pass the product details and the merchant — the agent will charge the user's USDC balance and complete the purchase via the appropriate fulfillment method (gift card for retail stores, direct payment for crypto-friendly merchants). Works for Amazon, Walmart, Target, Best Buy, Home Depot, Apple, Nike, Tokopedia, Shopee, Lazada, Steam, PlayStation, Xbox, and 600+ retailers globally.",
+    description: "Buy or top up ANYTHING the user asks for, paid from their USDC balance. Bitrefill carries 1500+ products across 180+ countries: gift cards (Amazon, Walmart, Target, Nike, Sephora, etc.), subscriptions (Netflix, Spotify, Hulu, Apple, Google Play), gaming (Steam, PlayStation, Xbox, Roblox/Robux, Fortnite/V-Bucks, Riot/Valorant, League, Genshin), mobile top-ups (any carrier worldwide), e-wallets (GCash, GoPay, OVO, Dana, AliPay, Paytm, MercadoPago, etc.), eSIMs, food delivery (DoorDash, Uber Eats, Grubhub), travel (Airbnb, Hotels.com), bill payments, prepaid cards. If the user wants to buy/top up/fund/subscribe to ANYTHING, use this tool first — Bitrefill probably has it.",
     input_schema: {
       type: "object",
       properties: {
-        product_name: { type: "string", description: "What the user is buying (e.g. 'Sony WH-1000XM5 headphones')" },
-        merchant: { type: "string", description: "Store to buy from (e.g. 'Amazon', 'Tokopedia', 'Walmart')" },
-        product_url: { type: "string", description: "Direct link to the product page" },
-        amount_usd: { type: "number", description: "Total price in USD (or USD equivalent)" },
-        country: { type: "string", default: "US", description: "ISO country code (US, ID for Indonesia, etc.)" }
+        product_name: { type: "string", description: "What the user is buying (e.g. 'Netflix subscription', 'Robux', 'GCash top-up', 'Sony headphones')" },
+        merchant: { type: "string", description: "Service or store name (e.g. 'Netflix', 'Roblox', 'GCash', 'Amazon', 'Steam', 'Spotify')" },
+        amount_usd: { type: "number", description: "Total amount in USD (or USD equivalent for top-ups)" },
+        country: { type: "string", default: "US", description: "ISO country code where the user is (US, PH for Philippines, ID for Indonesia, BR for Brazil, etc.). This determines what's available." },
+        product_url: { type: "string", description: "Optional: direct link to the product page" }
       },
-      required: ["product_name", "merchant", "amount_usd"]
+      required: ["merchant", "amount_usd"]
     }
   },
   {
     name: "buy_gift_card",
-    description: "Buy a standalone gift card (not tied to a specific product) from any retailer using USDC. Use this when user explicitly asks for a gift card as a gift, or when buy_product needs to fall back to gift card flow.",
+    description: "Same as buy_product but specifically for traditional retail gift cards. Prefer buy_product unless the user explicitly says 'gift card'.",
     input_schema: {
       type: "object",
       properties: {

@@ -71,7 +71,6 @@ async function isSandboxAlive(sandboxId) {
 async function takeScreenshot(sandboxId) {
   const sbx = await getSandbox(sandboxId);
   const bytes = await sbx.screenshot();
-  // Return base64 PNG for sending to Claude
   return Buffer.from(bytes).toString("base64");
 }
 

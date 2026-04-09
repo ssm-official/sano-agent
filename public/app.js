@@ -388,10 +388,7 @@ function createComputerCard(body) {
         <div class="computer-spinner"></div>
         <span class="computer-status-text">Working...</span>
       </div>
-      <div class="computer-action-count">0 actions</div>
-    </div>
-    <div class="computer-screenshot">
-      <div style="color:var(--text-4);font-size:12px">Loading desktop...</div>
+      <div class="computer-action-count">0</div>
     </div>
   `;
   const text = body.querySelector(".msg-text");
@@ -408,23 +405,8 @@ function updateComputerCard(card, action, label, screenshotB64) {
   if (statusText) statusText.textContent = label || action;
 
   const counter = card.querySelector(".computer-action-count");
-  if (counter) counter.textContent = `${count} action${count === 1 ? "" : "s"}`;
+  if (counter) counter.textContent = `${count}`;
 
-  const screenshotContainer = card.querySelector(".computer-screenshot");
-  if (screenshotContainer && screenshotB64) {
-    let img = screenshotContainer.querySelector("img");
-    if (!img) {
-      screenshotContainer.innerHTML = "";
-      img = document.createElement("img");
-      screenshotContainer.appendChild(img);
-      const overlay = document.createElement("div");
-      overlay.className = "computer-overlay";
-      screenshotContainer.appendChild(overlay);
-    }
-    img.src = `data:image/png;base64,${screenshotB64}`;
-    const overlay = screenshotContainer.querySelector(".computer-overlay");
-    if (overlay) overlay.textContent = label || action;
-  }
   scroll();
 }
 
