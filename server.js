@@ -212,16 +212,13 @@ app.post("/api/auth/verify", async (req, res) => {
     store.saveMemory(key, initialMemory);
     console.log(`  [USER] New user: ${key} -> wallet ${user.wallet}`);
   } else if (!user.walletSecret) {
-    // User was auto-recovered without a secret key (data lost) — give them a fresh wallet
-    // Memory is preserved
-    const keypair = Keypair.generate();
-    user.wallet = keypair.publicKey.toBase58();
-    user.walletSecret = bs58.encode(keypair.secretKey);
-    user.recovered = false;
-    user.wallet_refreshed = new Date().toISOString();
+    // User was auto-recovered without a secret key.
+    // DO NOT replace the wallet — that would orphan funds at the old address.
+    // Instead, mark it as locked and tell the client.
+    user.locked = true;
     users.set(key, user);
     store.saveUsers(users);
-    console.log(`  [USER] Refreshed wallet for ${key} -> ${user.wallet}`);
+    console.log(`  [USER] Wallet locked for ${key} (no secret) -> ${user.wallet}`);
   }
 
   // Create auth token
