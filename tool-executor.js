@@ -769,22 +769,41 @@ const EXECUTORS = {
       }
 
       // 2. Get product details to find the right package
+      const productSlug = product.slug || product._id || product.id || product.product_id;
       const details = await bitrefill.getProductDetails({
-        productId: product.id || product.product_id || product.slug,
+        productId: productSlug,
         currency: "USD"
       });
+
+      // Check if this product needs a recipient (phone number, account ID)
+      const recipientType = details.recipient_type || "none";
 
       const pkg = bitrefill.pickBestPackage(details, input.amount_usd);
       if (!pkg) {
         return { error: `${product.name} doesn't have available packages right now.` };
       }
 
+      // Build the cart item — package_id is the parsed value (number for numeric, string for named)
+      const cartItem = {
+        product_id: productSlug,
+        package_id: pkg.package_id
+      };
+
+      // For products that need a recipient, check if user provided one
+      if (recipientType !== "none") {
+        if (!input.recipient_number) {
+          return {
+            error: `${product.name} needs a ${recipientType === "phone" ? "phone number" : "account ID"} to deliver to. Ask the user for it and call buy_product again with recipient_number set.`,
+            needs_recipient: true,
+            recipient_type: recipientType
+          };
+        }
+        cartItem.number = input.recipient_number;
+      }
+
       // 3. Buy with USDC on Solana
       const buyResult = await bitrefill.buyProducts({
-        cartItems: [{
-          product_id: product.id || product.product_id || product.slug,
-          package_id: pkg.package_value
-        }],
+        cartItems: [cartItem],
         paymentMethod: "usdc_solana",
         returnPaymentLink: false
       });
@@ -795,8 +814,16 @@ const EXECUTORS = {
 
       // 4. Pay the invoice with USDC from user's wallet
       const paymentInfo = buyResult.payment_info || buyResult;
-      const paymentAddress = paymentInfo.address;
-      const paymentAmount = parseFloat(paymentInfo.amount || paymentInfo.altcoinPrice || pkg.package_value);
+      const paymentAddress = paymentInfo.address || paymentInfo.payTo;
+      // Use the actual USDC amount from the invoice (Bitrefill tells us exact)
+      // Fall back to payment_price_usd from the package (in USD)
+      const paymentAmount = parseFloat(
+        paymentInfo.amount ||
+        paymentInfo.altcoinPrice ||
+        paymentInfo.expected_amount ||
+        pkg.payment_price_usd ||
+        0
+      );
       const invoiceId = buyResult.invoice_id || buyResult.id;
 
       if (!paymentAddress || !paymentAmount) {

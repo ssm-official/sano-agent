@@ -129,26 +129,40 @@ function pickBestProduct(searchResult, merchantQuery) {
 }
 
 // ─── Helper: pick the best package for a given USD amount ───
+// Returns: { package_id, payment_price_usd, package_value, package_currency, raw }
 function pickBestPackage(productDetails, amountUsd) {
   const packages = productDetails.packages || [];
   if (packages.length === 0) return null;
 
-  // Filter to packages that have a numeric value at or below the amount
-  // Some packages are duration-based ("1 Month") so try to match exactly or closest
-  const numeric = packages.filter(p => typeof p.package_value === "number");
-  if (numeric.length > 0) {
-    // Find closest at or below the amount, then closest above if none below
-    const atOrBelow = numeric.filter(p => p.package_value <= amountUsd);
-    if (atOrBelow.length > 0) {
-      // Closest to the amount (largest at or below)
-      return atOrBelow.sort((a, b) => b.package_value - a.package_value)[0];
-    }
-    // Otherwise smallest above
-    return numeric.sort((a, b) => a.package_value - b.package_value)[0];
-  }
+  // Normalize each package — package_value can be a string number ("50000")
+  // or a duration/name string ("1 Month"). payment_price is the USD cost.
+  const normalized = packages.map(p => {
+    const numericValue = parseFloat(p.package_value);
+    const isNumeric = !isNaN(numericValue) && String(numericValue) === String(p.package_value).trim();
+    return {
+      package_id: isNumeric ? numericValue : p.package_value,  // number for numeric, string for named/duration
+      payment_price_usd: parseFloat(p.payment_price || "0"),
+      package_value: p.package_value,
+      package_currency: p.package_currency,
+      raw: p,
+      is_numeric: isNumeric
+    };
+  });
 
-  // No numeric packages - just return the first one
-  return packages[0];
+  // Sort by USD price ascending
+  normalized.sort((a, b) => a.payment_price_usd - b.payment_price_usd);
+
+  // Find closest match to requested amount in USD
+  // Prefer the smallest package that's >= amountUsd (so user gets at least what they asked for)
+  // If everything is below, return the largest
+  // If everything is above, return the smallest
+  const atOrAbove = normalized.filter(p => p.payment_price_usd >= amountUsd);
+  if (atOrAbove.length > 0) {
+    // Smallest one that meets or exceeds the request
+    return atOrAbove[0];
+  }
+  // Otherwise largest available
+  return normalized[normalized.length - 1];
 }
 
 module.exports = {

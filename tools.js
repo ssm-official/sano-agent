@@ -17,14 +17,15 @@ const TOOLS = [
   },
   {
     name: "buy_product",
-    description: "Buy or top up ANYTHING the user asks for, paid from their USDC balance. Bitrefill carries 1500+ products across 180+ countries: gift cards (Amazon, Walmart, Target, Nike, Sephora, etc.), subscriptions (Netflix, Spotify, Hulu, Apple, Google Play), gaming (Steam, PlayStation, Xbox, Roblox/Robux, Fortnite/V-Bucks, Riot/Valorant, League, Genshin), mobile top-ups (any carrier worldwide), e-wallets (GCash, GoPay, OVO, Dana, AliPay, Paytm, MercadoPago, etc.), eSIMs, food delivery (DoorDash, Uber Eats, Grubhub), travel (Airbnb, Hotels.com), bill payments, prepaid cards. If the user wants to buy/top up/fund/subscribe to ANYTHING, use this tool first — Bitrefill probably has it.",
+    description: "Buy or top up ANYTHING the user asks for, paid from their USDC balance. Bitrefill carries 1500+ products across 180+ countries: gift cards (Amazon, Walmart, Target, Nike, Sephora, etc.), subscriptions (Netflix, Spotify, Hulu, Apple, Google Play), gaming (Steam, PlayStation, Xbox, Roblox/Robux, Fortnite/V-Bucks, Riot/Valorant, League, Genshin), mobile top-ups (any carrier worldwide), e-wallets (GCash, GoPay, OVO, Dana, AliPay, Paytm, MercadoPago, etc.), eSIMs, food delivery (DoorDash, Uber Eats, Grubhub), travel (Airbnb, Hotels.com), bill payments, prepaid cards. If the user wants to buy/top up/fund/subscribe to ANYTHING, use this tool first. If the tool returns needs_recipient, ask the user for their phone number or account ID and try again with recipient_number set.",
     input_schema: {
       type: "object",
       properties: {
-        product_name: { type: "string", description: "What the user is buying (e.g. 'Netflix subscription', 'Robux', 'GCash top-up', 'Sony headphones')" },
-        merchant: { type: "string", description: "Service or store name (e.g. 'Netflix', 'Roblox', 'GCash', 'Amazon', 'Steam', 'Spotify')" },
-        amount_usd: { type: "number", description: "Total amount in USD (or USD equivalent for top-ups)" },
-        country: { type: "string", default: "US", description: "ISO country code where the user is (US, PH for Philippines, ID for Indonesia, BR for Brazil, etc.). This determines what's available." },
+        product_name: { type: "string", description: "What the user is buying (e.g. 'Netflix subscription', 'Robux', 'GCash top-up')" },
+        merchant: { type: "string", description: "Service or store name (e.g. 'Netflix', 'Roblox', 'GCash', 'GoPay', 'Amazon', 'Steam')" },
+        amount_usd: { type: "number", description: "Approximate amount in USD. Bitrefill has fixed denominations — the closest matching one will be picked." },
+        country: { type: "string", default: "US", description: "ISO country code: US, PH for Philippines, ID for Indonesia, BR for Brazil, IN for India, etc." },
+        recipient_number: { type: "string", description: "Phone number or account ID for products that need it (mobile top-ups, e-wallets, etc.). Only include if the user has shared it." },
         product_url: { type: "string", description: "Optional: direct link to the product page" }
       },
       required: ["merchant", "amount_usd"]
