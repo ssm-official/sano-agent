@@ -479,6 +479,16 @@ app.post("/api/chat", async (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
 
+  // If the user's sandbox is dead, fail loud instead of silently creating a new one
+  if (sandboxDead && userRecord?.sandbox_id) {
+    res.write(`data: ${JSON.stringify({
+      type: "text",
+      content: `Your agent's sandbox is missing. Your wallet at ${userRecord.wallet} still exists on-chain but the secret key is locked. To start fresh with a NEW wallet (this will NOT recover your old funds), tap the "Reset agent" button in settings — but make sure you've moved any funds from the old wallet first if you can.`
+    })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: "done", sessionId: sid })}\n\n`);
+    return res.end();
+  }
+
   const now = new Date();
   const days = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
   const todayStr = now.toISOString().split("T")[0]; // YYYY-MM-DD
@@ -503,32 +513,18 @@ app.post("/api/chat", async (req, res) => {
   // Inject the user's memory (now from their isolated sandbox)
   let userRecord = userEmail ? users.get(userEmail) : null;
 
-  // Check if the user's sandbox is still alive — if not, recreate it
+  // SAFETY: Check if the user's sandbox is still alive but DO NOT auto-recreate.
+  // Auto-creating a new sandbox would orphan any funds at the old wallet address.
+  let sandboxDead = false;
   if (userRecord?.sandbox_id) {
     const alive = await sandbox.isSandboxAlive(userRecord.sandbox_id);
     if (!alive) {
-      console.log(`  [SBX] Sandbox ${userRecord.sandbox_id} not found, recreating for ${userEmail}`);
-      try {
-        // Save existing memory if we have it cached anywhere
-        const oldMemory = store.loadMemory(userEmail) || "";
-        const sbxResult = await sandbox.createUserSandbox(userEmail);
-        userRecord.sandbox_id = sbxResult.sandboxId;
-        userRecord.wallet = sbxResult.wallet;
-        userRecord.recovered_at = new Date().toISOString();
-        users.set(userEmail, userRecord);
-        store.saveUsers(users);
-        if (oldMemory) {
-          try { await sandbox.writeMemory(sbxResult.sandboxId, oldMemory); } catch (e) {}
-        }
-        console.log(`  [SBX] Recovered ${userEmail} -> ${sbxResult.sandboxId}`);
-      } catch (e) {
-        console.error(`  [SBX] Recovery failed for ${userEmail}:`, e.message);
-        userRecord.sandbox_id = null;
-      }
+      sandboxDead = true;
+      console.warn(`  [SBX] Sandbox ${userRecord.sandbox_id} is missing for ${userEmail} — NOT recreating to preserve wallet ${userRecord.wallet}`);
     }
   }
 
-  if (userRecord?.sandbox_id) {
+  if (userRecord?.sandbox_id && !sandboxDead) {
     try {
       const memory = await sandbox.readMemory(userRecord.sandbox_id);
       if (memory) {
