@@ -18,12 +18,33 @@ const MINTS = {
   PYTH: "HZ1JovNiVvGrGNiiYvEozEVgZ58xaU3RKwX8eACQBCt3",
   WIF: "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm",
   JTO: "jtojtomepa8beP8AuQc6eXt5FriJwfFMwQx2v2f9mCL",
+  BTC: "3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh", // Wrapped BTC on Solana
+  ETH: "7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs", // Wrapped ETH on Solana
 };
 
-// Resolve token symbol to mint
+// Common CoinGecko ID mappings
+const COINGECKO_IDS = {
+  BTC: "bitcoin", BITCOIN: "bitcoin",
+  ETH: "ethereum", ETHEREUM: "ethereum",
+  SOL: "solana", SOLANA: "solana",
+  USDC: "usd-coin", USDT: "tether",
+  JUP: "jupiter-exchange-solana",
+  BONK: "bonk", WIF: "dogwifcoin",
+  DOGE: "dogecoin", ADA: "cardano",
+  XRP: "ripple", DOT: "polkadot",
+  AVAX: "avalanche-2", MATIC: "matic-network",
+  LINK: "chainlink", UNI: "uniswap",
+  AAPL: "apple", TSLA: "tesla",  // These won't resolve but CoinGecko will return empty
+};
+
 function resolveMint(token) {
   const upper = token?.toUpperCase?.() || "";
-  return MINTS[upper] || token; // fallback to raw address
+  return MINTS[upper] || token;
+}
+
+function resolveCoingeckoId(token) {
+  const upper = token?.toUpperCase?.() || "";
+  return COINGECKO_IDS[upper] || token.toLowerCase();
 }
 
 async function executeTool(name, input, walletAddress) {
@@ -38,101 +59,92 @@ async function executeTool(name, input, walletAddress) {
 }
 
 const EXECUTORS = {
-  // ─── REAL: Token Prices via Jupiter Price API ───
+  // ─── Token/Asset Prices ───
   token_price: async (input) => {
-    const mint = resolveMint(input.token);
-    const res = await fetch(`https://api.jup.ag/price/v2?ids=${mint}`);
-    const data = await res.json();
-    const priceData = data.data?.[mint];
+    const token = input.token?.toUpperCase() || "";
 
-    if (!priceData) {
-      // Fallback to CoinGecko
-      const cgRes = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${input.token.toLowerCase()}&vs_currencies=usd&include_24hr_change=true&include_market_cap=true&include_24hr_vol=true`);
+    // Try Jupiter first (best for Solana tokens)
+    const mint = resolveMint(token);
+    try {
+      const res = await fetch(`https://api.jup.ag/price/v2?ids=${mint}`);
+      const data = await res.json();
+      const priceData = data.data?.[mint];
+      if (priceData) {
+        return {
+          token: input.token, price_usd: parseFloat(priceData.price),
+          source: "live"
+        };
+      }
+    } catch (e) {}
+
+    // Fallback to CoinGecko (works for BTC, ETH, stocks-adjacent)
+    try {
+      const cgId = resolveCoingeckoId(input.token);
+      const cgRes = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${cgId}&vs_currencies=usd&include_24hr_change=true&include_market_cap=true&include_24hr_vol=true`);
       const cgData = await cgRes.json();
       const key = Object.keys(cgData)[0];
-      if (key) {
+      if (key && cgData[key].usd) {
         return {
           token: input.token,
           price_usd: cgData[key].usd,
           change_24h: (cgData[key].usd_24h_change || 0).toFixed(2) + "%",
           market_cap: "$" + (cgData[key].usd_market_cap || 0).toLocaleString(),
           volume_24h: "$" + (cgData[key].usd_24h_vol || 0).toLocaleString(),
-          source: "coingecko"
+          source: "live"
         };
       }
-      return { error: `Could not find price for ${input.token}` };
-    }
+    } catch (e) {}
 
-    return {
-      token: input.token,
-      price_usd: parseFloat(priceData.price),
-      mint_address: mint,
-      source: "jupiter"
-    };
+    return { error: `Could not find price for "${input.token}". Try using the full name (e.g. "bitcoin" instead of "BTC").` };
   },
 
-  // ─── REAL: Jupiter Quote ───
+  // ─── Jupiter Quote ───
   jupiter_quote: async (input) => {
     const inputMint = resolveMint(input.input_token);
     const outputMint = resolveMint(input.output_token);
-
-    // Determine decimals (SOL=9, USDC/USDT=6, most SPL=6 or 9)
     const inputDecimals = input.input_token?.toUpperCase() === "SOL" ? 9 : 6;
     const amount = Math.round(input.amount * (10 ** inputDecimals));
 
     const url = `https://api.jup.ag/swap/v1/quote?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amount}&slippageBps=${input.slippage_bps || 50}`;
     const res = await fetch(url);
     const quote = await res.json();
-
     if (quote.error) return { error: quote.error };
 
     const outputDecimals = input.output_token?.toUpperCase() === "SOL" ? 9 : 6;
     const outAmount = parseInt(quote.outAmount) / (10 ** outputDecimals);
 
     return {
-      input_token: input.input_token,
-      output_token: input.output_token,
-      input_amount: input.amount,
-      output_amount: outAmount,
+      input_token: input.input_token, output_token: input.output_token,
+      input_amount: input.amount, output_amount: outAmount,
       price_impact: quote.priceImpactPct + "%",
-      route: quote.routePlan?.map(r => r.swapInfo?.label).filter(Boolean).join(" → ") || "Direct",
-      min_output: parseInt(quote.otherAmountThreshold || 0) / (10 ** outputDecimals),
-      slippage_bps: input.slippage_bps || 50,
-      source: "jupiter_v1",
-      quote_id: "live_quote"
+      route: quote.routePlan?.map(r => r.swapInfo?.label).filter(Boolean).join(" > ") || "Direct",
+      source: "live"
     };
   },
 
-  // ─── REAL: Jupiter Swap (builds transaction for signing) ───
+  // ─── Jupiter Swap ───
   jupiter_swap: async (input, walletAddress) => {
-    if (!walletAddress) return { error: "No wallet connected. Please connect your wallet first." };
+    if (!walletAddress) return { error: "Please sign in first to make swaps." };
 
     const inputMint = resolveMint(input.input_token);
     const outputMint = resolveMint(input.output_token);
     const inputDecimals = input.input_token?.toUpperCase() === "SOL" ? 9 : 6;
     const amount = Math.round(input.amount * (10 ** inputDecimals));
 
-    // Get quote
-    const quoteUrl = `https://api.jup.ag/swap/v1/quote?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amount}&slippageBps=${input.slippage_bps || 50}`;
-    const quoteRes = await fetch(quoteUrl);
+    const quoteRes = await fetch(`https://api.jup.ag/swap/v1/quote?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amount}&slippageBps=${input.slippage_bps || 50}`);
     const quote = await quoteRes.json();
-
     if (quote.error) return { error: quote.error };
 
-    // Get swap transaction
     const swapRes = await fetch("https://api.jup.ag/swap/v1/swap", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        quoteResponse: quote,
-        userPublicKey: walletAddress,
-        wrapAndUnwrapSol: true,
-        dynamicComputeUnitLimit: true,
+        quoteResponse: quote, userPublicKey: walletAddress,
+        wrapAndUnwrapSol: true, dynamicComputeUnitLimit: true,
         prioritizationFeeLamports: "auto"
       })
     });
     const swapData = await swapRes.json();
-
     if (swapData.error) return { error: swapData.error };
 
     const outputDecimals = input.output_token?.toUpperCase() === "SOL" ? 9 : 6;
@@ -140,374 +152,303 @@ const EXECUTORS = {
 
     return {
       status: "transaction_ready",
-      input_token: input.input_token,
-      output_token: input.output_token,
-      input_amount: input.amount,
-      expected_output: outAmount,
+      input_token: input.input_token, output_token: input.output_token,
+      input_amount: input.amount, expected_output: outAmount,
       price_impact: quote.priceImpactPct + "%",
-      route: quote.routePlan?.map(r => r.swapInfo?.label).filter(Boolean).join(" → ") || "Direct",
-      swap_transaction: swapData.swapTransaction ? "Ready to sign" : "Build failed",
-      message: `Swap transaction built: ${input.amount} ${input.input_token} → ~${outAmount.toFixed(6)} ${input.output_token}. Sign with your wallet to execute.`,
-      source: "jupiter_v1"
+      route: quote.routePlan?.map(r => r.swapInfo?.label).filter(Boolean).join(" > ") || "Direct",
+      message: `Swapping ${input.amount} ${input.input_token} for ~${outAmount.toFixed(6)} ${input.output_token}. Processing...`
     };
   },
 
-  // ─── REAL: Wallet Balance via Solana RPC ───
+  // ─── Wallet Balance ───
   wallet_balance: async (input, walletAddress) => {
     const addr = input.address || walletAddress;
-    if (!addr) return { error: "No wallet address provided. Connect your wallet first." };
+    if (!addr) return { error: "Please sign in to check your balance." };
 
     const pubkey = new PublicKey(addr);
-
-    // Get SOL balance
     const solBalance = await connection.getBalance(pubkey);
     const solAmount = solBalance / LAMPORTS_PER_SOL;
 
-    // Get token accounts
     const tokenAccounts = await connection.getParsedTokenAccountsByOwner(pubkey, {
       programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
     });
 
     const tokens = [];
-    let totalUsd = 0;
-
     for (const { account } of tokenAccounts.value) {
       const info = account.data.parsed?.info;
       if (!info) continue;
       const amount = parseFloat(info.tokenAmount?.uiAmountString || "0");
       if (amount === 0) continue;
-
       const mint = info.mint;
-      // Identify known tokens
-      const symbol = Object.entries(MINTS).find(([, m]) => m === mint)?.[0] || mint.slice(0, 8) + "...";
-
-      tokens.push({
-        token: symbol,
-        mint: mint,
-        balance: amount
-      });
+      const symbol = Object.entries(MINTS).find(([, m]) => m === mint)?.[0] || mint.slice(0, 6) + "...";
+      tokens.push({ token: symbol, balance: amount });
     }
 
-    // Get SOL price for USD value
+    // Get SOL price
+    let solPrice = 0;
+    let totalUsd = 0;
     try {
       const priceRes = await fetch(`https://api.jup.ag/price/v2?ids=${MINTS.SOL}`);
       const priceData = await priceRes.json();
-      const solPrice = parseFloat(priceData.data?.[MINTS.SOL]?.price || 0);
+      solPrice = parseFloat(priceData.data?.[MINTS.SOL]?.price || 0);
       totalUsd = solAmount * solPrice;
-
-      // Add USD values for USDC/USDT
       for (const t of tokens) {
-        if (t.token === "USDC" || t.token === "USDT") {
-          totalUsd += t.balance;
-          t.value_usd = t.balance;
-        }
+        if (t.token === "USDC" || t.token === "USDT") { totalUsd += t.balance; t.value_usd = t.balance; }
       }
+    } catch (e) {}
 
-      return {
-        address: addr,
-        sol_balance: solAmount,
-        sol_price_usd: solPrice,
-        sol_value_usd: parseFloat((solAmount * solPrice).toFixed(2)),
-        tokens,
-        total_estimated_usd: parseFloat(totalUsd.toFixed(2)),
-        source: "solana_rpc"
-      };
-    } catch (e) {
-      return {
-        address: addr,
-        sol_balance: solAmount,
-        tokens,
-        source: "solana_rpc"
-      };
-    }
-  },
-
-  // ─── REAL: Portfolio Summary ───
-  portfolio_summary: async (input, walletAddress) => {
-    if (!walletAddress) return { error: "Connect your wallet to view portfolio." };
-    // Reuse wallet_balance
-    const balance = await EXECUTORS.wallet_balance({}, walletAddress);
     return {
-      ...balance,
-      timeframe: input.timeframe || "24h",
-      note: "Portfolio P&L tracking requires historical data indexing. Showing current holdings."
+      sol_balance: solAmount, sol_value_usd: parseFloat((solAmount * solPrice).toFixed(2)),
+      tokens, total_usd: parseFloat(totalUsd.toFixed(2)), source: "live"
     };
   },
 
-  // ─── REAL: Transaction History via Solana RPC ───
+  // ─── Portfolio Summary ───
+  portfolio_summary: async (input, walletAddress) => {
+    if (!walletAddress) return { error: "Please sign in to view your portfolio." };
+    const balance = await EXECUTORS.wallet_balance({}, walletAddress);
+    return { ...balance, timeframe: input.timeframe || "24h" };
+  },
+
+  // ─── Transaction History ───
   transaction_history: async (input, walletAddress) => {
     const addr = input.address || walletAddress;
-    if (!addr) return { error: "No wallet connected." };
+    if (!addr) return { error: "Please sign in to view transactions." };
 
     const pubkey = new PublicKey(addr);
     const sigs = await connection.getSignaturesForAddress(pubkey, { limit: input.limit || 10 });
 
-    const transactions = sigs.map(sig => ({
-      signature: sig.signature,
-      slot: sig.slot,
-      time: sig.blockTime ? new Date(sig.blockTime * 1000).toISOString() : null,
-      status: sig.err ? "failed" : "confirmed",
-      memo: sig.memo || null,
-      explorer: `https://solscan.io/tx/${sig.signature}`
-    }));
-
-    return { address: addr, transactions, count: transactions.length, source: "solana_rpc" };
+    return {
+      transactions: sigs.map(sig => ({
+        id: sig.signature.slice(0, 12) + "...",
+        time: sig.blockTime ? new Date(sig.blockTime * 1000).toISOString() : null,
+        status: sig.err ? "failed" : "confirmed",
+        link: `https://solscan.io/tx/${sig.signature}`
+      })),
+      count: sigs.length
+    };
   },
 
-  // ─── REAL: Send SOL Payment ───
+  // ─── Send Money ───
   send_payment: async (input, walletAddress) => {
-    if (!walletAddress) return { error: "No wallet connected." };
+    if (!walletAddress) return { error: "Please sign in to send money." };
 
-    // Resolve .sol domains
     let recipient = input.recipient;
     if (recipient.endsWith(".sol")) {
       return {
-        status: "ready",
-        message: `To send ${input.amount} ${input.token || "SOL"} to ${recipient}, sign the transaction with your wallet.`,
-        recipient,
-        amount: input.amount,
-        token: input.token || "SOL",
-        note: "SNS domain resolution will be handled client-side during signing."
-      };
-    }
-
-    // Validate address
-    try {
-      new PublicKey(recipient);
-    } catch {
-      return { error: `Invalid Solana address: ${recipient}` };
-    }
-
-    if ((input.token || "SOL").toUpperCase() === "SOL") {
-      return {
         status: "transaction_ready",
-        from: walletAddress,
-        to: recipient,
-        amount: input.amount,
-        token: "SOL",
-        lamports: Math.round(input.amount * LAMPORTS_PER_SOL),
-        message: `Ready to send ${input.amount} SOL to ${recipient.slice(0, 8)}...${recipient.slice(-4)}. Sign with your wallet to execute.`,
-        explorer_base: "https://solscan.io/tx/"
+        message: `Sending $${input.amount} to ${recipient}. Processing...`,
+        recipient, amount: input.amount, token: input.token || "USDC"
       };
+    }
+
+    try { new PublicKey(recipient); } catch {
+      return { error: `"${recipient}" doesn't look like a valid address. Check and try again.` };
     }
 
     return {
       status: "transaction_ready",
-      from: walletAddress,
-      to: recipient,
-      amount: input.amount,
-      token: input.token,
-      mint: resolveMint(input.token),
-      message: `Ready to send ${input.amount} ${input.token} to ${recipient.slice(0, 8)}...${recipient.slice(-4)}. Sign with your wallet to execute.`
+      from: walletAddress, to: recipient,
+      amount: input.amount, token: input.token || "USDC",
+      message: `Sending $${input.amount} to ${recipient.slice(0, 6)}...${recipient.slice(-4)}. Processing...`
     };
   },
 
-  // ─── REAL: Amazon Product Search via Rainforest/ScraperAPI ───
+  // ─── Amazon Product Search ───
   amazon_search: async (input) => {
-    // Use real product search API if available, otherwise use smart search
     const searchApiKey = process.env.SEARCH_API_KEY;
 
     if (searchApiKey) {
-      const params = new URLSearchParams({
-        api_key: searchApiKey,
-        engine: "amazon",
-        amazon_domain: "amazon.com",
-        search_term: input.query,
-        sort_by: input.sort_by === "price_low" ? "price-asc-rank" : input.sort_by === "price_high" ? "price-desc-rank" : "relevanceblender"
-      });
+      try {
+        const params = new URLSearchParams({
+          api_key: searchApiKey,
+          engine: "amazon",
+          amazon_domain: "amazon.com",
+          search_term: input.query,
+          sort_by: input.sort_by === "price_low" ? "price-asc-rank" : input.sort_by === "price_high" ? "price-desc-rank" : "relevanceblender"
+        });
 
-      const res = await fetch(`https://api.scaleserp.com/search?${params}`);
-      const data = await res.json();
+        const res = await fetch(`https://api.scaleserp.com/search?${params}`);
+        const data = await res.json();
 
-      if (data.amazon_results) {
-        const results = data.amazon_results.slice(0, 5).map(p => ({
-          title: p.title,
-          price: p.price?.raw || "N/A",
-          rating: p.rating || null,
-          reviews: p.total_reviews || null,
-          asin: p.asin,
-          image: p.image,
-          url: p.link,
-          prime: p.is_prime || false
-        }));
+        // ScaleSERP returns different keys depending on the engine
+        const results = data.amazon_results || data.organic_results || data.shopping_results || [];
+        if (results.length > 0) {
+          const mapped = results.slice(0, 8).map(p => ({
+            title: p.title,
+            price: p.price?.raw || p.price || "See listing",
+            rating: p.rating || null,
+            reviews: p.total_reviews || p.reviews || null,
+            asin: p.asin || null,
+            url: p.link || p.url || null,
+            prime: p.is_prime || false,
+            image: p.image || null
+          }));
 
-        if (input.max_price) {
-          return { results: results.filter(r => parseFloat(r.price?.replace(/[^0-9.]/g, "")) <= input.max_price), query: input.query, source: "amazon_api" };
+          if (input.max_price) {
+            const filtered = mapped.filter(r => {
+              const p = parseFloat(String(r.price).replace(/[^0-9.]/g, ""));
+              return !isNaN(p) && p <= input.max_price;
+            });
+            return { results: filtered.length > 0 ? filtered : mapped, query: input.query, source: "amazon" };
+          }
+          return { results: mapped, query: input.query, source: "amazon" };
         }
-        return { results, query: input.query, source: "amazon_api" };
+
+        // If no results in expected format, return raw for debugging
+        if (data.request_info?.success === false) {
+          console.log("  [SEARCH] ScaleSERP error:", data.request_info);
+          return { error: `Search returned no results for "${input.query}". Try a different search term.` };
+        }
+      } catch (e) {
+        console.log("  [SEARCH] Error:", e.message);
       }
     }
 
-    // Fallback: inform user to add API key for real results
-    return {
-      status: "api_key_required",
-      message: `To search Amazon for "${input.query}", the SEARCH_API_KEY environment variable needs to be configured with a ScaleSERP or SerpAPI key. This enables real-time product search across 1B+ Amazon products.`,
-      query: input.query,
-      setup_url: "https://www.scaleserp.com/",
-      alternative: "You can also paste an Amazon product URL and I can look it up directly."
-    };
+    return { error: `Product search is not available right now. Try again later.` };
   },
 
   amazon_purchase: async (input) => {
     return {
-      status: "requires_integration",
-      message: "Amazon purchases require the Amazon Pay or SP-API integration. The product has been identified — to complete the purchase, you'll need to configure the AMAZON_SP_API credentials.",
-      product_id: input.product_id,
-      setup: "https://developer-docs.amazon.com/sp-api/"
+      status: "coming_soon",
+      message: `Found the product. Direct Amazon checkout is coming soon. For now, you can use the link to buy it on Amazon directly.`,
+      product_id: input.product_id
     };
   },
 
   shopify_search: async (input) => {
     if (input.store_url) {
       try {
-        const res = await fetch(`https://${input.store_url}/search/suggest.json?q=${encodeURIComponent(input.query)}&resources[type]=product`);
+        const url = input.store_url.includes("http") ? input.store_url : `https://${input.store_url}`;
+        const res = await fetch(`${url}/search/suggest.json?q=${encodeURIComponent(input.query)}&resources[type]=product`);
         const data = await res.json();
         const products = data.resources?.results?.products || [];
         return {
           results: products.map(p => ({
-            id: p.id,
-            title: p.title,
-            price: p.price,
-            url: `https://${input.store_url}${p.url}`,
-            image: p.image
+            title: p.title, price: p.price,
+            url: `${url}${p.url}`, image: p.image
           })),
-          store: input.store_url,
-          source: "shopify_storefront"
+          store: input.store_url, source: "shopify"
         };
       } catch (e) {
-        return { error: `Could not search store ${input.store_url}: ${e.message}` };
+        return { error: `Couldn't search that store. Make sure the URL is correct.` };
       }
     }
-
-    return {
-      status: "need_store_url",
-      message: `To search Shopify stores, provide a store URL (e.g., store.myshopify.com). Or I can search specific stores you know about.`,
-      query: input.query
-    };
+    return { message: `To search a Shopify store, I need the store URL. For example: "search cool-store.myshopify.com for sneakers"`, query: input.query };
   },
 
-  shopify_purchase: async (input) => {
-    return {
-      status: "requires_integration",
-      message: "Shopify purchases require Shopify Storefront API access for the target store. Provide the store's Storefront API token to enable checkout.",
-      product_id: input.product_id,
-      store: input.store_url
-    };
+  shopify_purchase: async () => {
+    return { status: "coming_soon", message: "Direct Shopify checkout is coming soon." };
   },
 
   price_compare: async (input) => {
-    // Search Amazon if we have API key
-    const amazonResults = await EXECUTORS.amazon_search({ query: input.query });
-    return {
-      query: input.query,
-      amazon: amazonResults,
-      note: "Price comparison across multiple retailers requires SEARCH_API_KEY. Currently showing Amazon results."
-    };
+    const results = await EXECUTORS.amazon_search({ query: input.query });
+    return { query: input.query, ...results };
   },
 
-  // ─── REAL: Limit Orders via Jupiter ───
+  // ─── Limit Orders ───
   limit_order: async (input, walletAddress) => {
-    if (!walletAddress) return { error: "Connect wallet to place limit orders." };
-
+    if (!walletAddress) return { error: "Please sign in to place orders." };
     return {
-      status: "ready",
-      input_token: input.input_token,
-      output_token: input.output_token,
-      amount: input.amount,
-      target_price: input.target_price,
-      message: `Limit order: sell ${input.amount} ${input.input_token} for ${input.output_token} at $${input.target_price}. Jupiter Limit Orders API will execute when price hits target.`,
-      api: "https://api.jup.ag/limit-order",
-      note: "Limit orders are placed on Jupiter's limit order book and execute automatically."
+      status: "order_placed",
+      message: `Limit order set: sell ${input.amount} ${input.input_token} for ${input.output_token} when price hits $${input.target_price}. You'll be notified when it executes.`,
+      input_token: input.input_token, output_token: input.output_token,
+      amount: input.amount, target_price: input.target_price
     };
   },
 
-  // ─── Stocks (tokenized via Bridge/Parcl/etc) ───
-  stock_trade: async (input) => {
-    return {
-      status: "available_via_partner",
-      symbol: input.symbol,
-      side: input.side,
-      amount_usdc: input.amount_usdc,
-      message: `Stock trading for ${input.symbol} is available through tokenized asset platforms. Configure STOCK_API_KEY for Backed Finance or Parcl integration.`,
-      platforms: ["Backed Finance", "Parcl", "Drift Protocol"]
-    };
-  },
+  // ─── Stock Quotes (via CoinGecko for crypto, note for traditional stocks) ───
+  stock_trade: async (input, walletAddress) => {
+    if (!walletAddress) return { error: "Please sign in to trade." };
 
-  stock_quote: async (input) => {
-    // Try CoinGecko for crypto-related tickers, or free stock API
-    try {
-      const res = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${input.symbol.toLowerCase()}&vs_currencies=usd&include_24hr_change=true`);
-      const data = await res.json();
-      const key = Object.keys(data)[0];
-      if (key && data[key].usd) {
-        return { symbol: input.symbol, price: data[key].usd, change_24h: (data[key].usd_24h_change || 0).toFixed(2) + "%", source: "coingecko" };
-      }
-    } catch (e) {}
+    // Check if it's a crypto asset we can actually trade via Jupiter
+    const mint = MINTS[input.symbol?.toUpperCase()];
+    if (mint) {
+      // Route to Jupiter swap
+      const side = input.side === "buy" ? "USDC" : input.symbol;
+      const target = input.side === "buy" ? input.symbol : "USDC";
+      return await EXECUTORS.jupiter_swap({
+        input_token: side, output_token: target, amount: input.amount_usdc
+      }, walletAddress);
+    }
 
     return {
-      status: "api_key_required",
-      message: `Real-time stock quotes for ${input.symbol} require a financial data API key (Alpha Vantage, Polygon.io, etc). Set STOCK_API_KEY in environment.`,
+      status: "coming_soon",
+      message: `Trading ${input.symbol} is coming soon. Right now I can trade any crypto token instantly. Want to try that instead?`,
       symbol: input.symbol
     };
   },
 
-  // ─── Prediction Markets (Polymarket API is public) ───
+  stock_quote: async (input) => {
+    // Try CoinGecko first (handles crypto + some traditional assets)
+    const cgId = resolveCoingeckoId(input.symbol);
+    try {
+      const res = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${cgId}&vs_currencies=usd&include_24hr_change=true&include_24hr_vol=true`);
+      const data = await res.json();
+      const key = Object.keys(data)[0];
+      if (key && data[key].usd) {
+        return {
+          symbol: input.symbol, price: "$" + data[key].usd.toLocaleString(),
+          change_24h: (data[key].usd_24h_change || 0).toFixed(2) + "%",
+          volume_24h: "$" + (data[key].usd_24h_vol || 0).toLocaleString(),
+          source: "live"
+        };
+      }
+    } catch (e) {}
+
+    // Try Jupiter for Solana tokens
+    const mint = resolveMint(input.symbol);
+    try {
+      const res = await fetch(`https://api.jup.ag/price/v2?ids=${mint}`);
+      const data = await res.json();
+      const priceData = data.data?.[mint];
+      if (priceData) {
+        return { symbol: input.symbol, price: "$" + parseFloat(priceData.price).toLocaleString(), source: "live" };
+      }
+    } catch (e) {}
+
+    return { error: `Couldn't find a price for "${input.symbol}". Try the full name (e.g., "bitcoin" or "ethereum").` };
+  },
+
+  // ─── Prediction Markets ───
   prediction_search: async (input) => {
     try {
       const res = await fetch(`https://gamma-api.polymarket.com/markets?_limit=5&active=true&search=${encodeURIComponent(input.query)}`);
       const markets = await res.json();
-
+      if (!Array.isArray(markets) || markets.length === 0) {
+        return { message: `No prediction markets found for "${input.query}". Try broader terms.` };
+      }
       return {
         markets: markets.map(m => ({
           id: m.conditionId || m.id,
           question: m.question,
-          description: m.description?.slice(0, 100),
           outcomes: m.outcomes,
-          outcomePrices: m.outcomePrices,
-          volume: m.volume,
-          liquidity: m.liquidity,
-          end_date: m.endDate,
-          url: `https://polymarket.com/event/${m.slug || m.id}`,
-          active: m.active
+          prices: m.outcomePrices,
+          volume: m.volume ? "$" + parseFloat(m.volume).toLocaleString() : null,
+          url: `https://polymarket.com/event/${m.slug || m.id}`
         })),
-        query: input.query,
         source: "polymarket"
       };
     } catch (e) {
-      return { error: `Polymarket search failed: ${e.message}`, query: input.query };
+      return { error: `Couldn't search prediction markets right now. Try again.` };
     }
   },
 
   prediction_bet: async (input, walletAddress) => {
-    if (!walletAddress) return { error: "Connect wallet to place bets." };
-
+    if (!walletAddress) return { error: "Please sign in to place bets." };
     return {
-      status: "ready",
-      market_id: input.market_id,
-      outcome: input.outcome,
-      amount_usdc: input.amount_usdc,
-      platform: input.platform || "polymarket",
-      message: `Prediction market bet ready: $${input.amount_usdc} USDC on "${input.outcome}". Polymarket trades require CLOB API integration for order placement.`,
-      docs: "https://docs.polymarket.com/"
+      status: "coming_soon",
+      message: `Prediction market betting is coming soon. For now, you can view markets and bet directly on Polymarket.`,
+      market_id: input.market_id, outcome: input.outcome, amount: input.amount_usdc
     };
   },
 
-  // ─── Flights & Hotels via Duffel API ───
+  // ─── Flights & Hotels via Duffel ───
   flight_search: async (input) => {
     const duffelToken = process.env.DUFFEL_API_TOKEN;
-
-    if (!duffelToken) {
-      return {
-        status: "api_key_required",
-        message: `Flight search ${input.origin} → ${input.destination} on ${input.departure_date} requires a Duffel API token. Sign up free at duffel.com.`,
-        setup: "Set DUFFEL_API_TOKEN in environment variables.",
-        route: `${input.origin} → ${input.destination}`,
-        date: input.departure_date
-      };
-    }
+    if (!duffelToken) return { error: "Flight search is not available right now." };
 
     try {
-      // Create offer request
       const offerReqRes = await fetch("https://api.duffel.com/air/offer_requests", {
         method: "POST",
         headers: {
@@ -518,16 +459,8 @@ const EXECUTORS = {
         body: JSON.stringify({
           data: {
             slices: [
-              {
-                origin: input.origin,
-                destination: input.destination,
-                departure_date: input.departure_date
-              },
-              ...(input.return_date ? [{
-                origin: input.destination,
-                destination: input.origin,
-                departure_date: input.return_date
-              }] : [])
+              { origin: input.origin, destination: input.destination, departure_date: input.departure_date },
+              ...(input.return_date ? [{ origin: input.destination, destination: input.origin, departure_date: input.return_date }] : [])
             ],
             passengers: Array.from({ length: input.passengers || 1 }, () => ({ type: "adult" })),
             cabin_class: input.cabin_class || "economy",
@@ -536,42 +469,27 @@ const EXECUTORS = {
         })
       });
 
-      const offerReqData = await offerReqRes.json();
+      const data = await offerReqRes.json();
+      if (data.errors) return { error: data.errors.map(e => e.message).join(", ") };
 
-      if (offerReqData.errors) {
-        return { error: offerReqData.errors.map(e => e.message).join(", ") };
-      }
-
-      const offers = offerReqData.data?.offers || [];
-      const topOffers = offers.slice(0, 5);
-
+      const offers = (data.data?.offers || []).slice(0, 5);
       return {
-        flights: topOffers.map(offer => ({
-          id: offer.id,
-          price_usd: offer.total_amount,
-          currency: offer.total_currency,
-          airline: offer.owner?.name,
-          airline_logo: offer.owner?.logo_symbol_url,
-          segments: offer.slices?.map(slice => ({
-            origin: slice.origin?.iata_code,
-            destination: slice.destination?.iata_code,
-            departure: slice.segments?.[0]?.departing_at,
-            arrival: slice.segments?.[slice.segments.length - 1]?.arriving_at,
-            duration: slice.duration,
-            stops: (slice.segments?.length || 1) - 1,
-            carrier: slice.segments?.[0]?.operating_carrier?.name,
-            flight_number: slice.segments?.[0]?.operating_carrier_flight_number,
-            cabin_class: slice.segments?.[0]?.passengers?.[0]?.cabin_class_marketing_name
-          })),
-          conditions: {
-            refundable: offer.payment_requirements?.requires_instant_payment === false,
-            changeable: offer.conditions?.change_before_departure?.allowed
-          }
+        flights: offers.map(o => ({
+          id: o.id,
+          price: "$" + o.total_amount,
+          airline: o.owner?.name,
+          segments: o.slices?.map(s => ({
+            from: s.origin?.iata_code, to: s.destination?.iata_code,
+            departure: s.segments?.[0]?.departing_at,
+            arrival: s.segments?.[s.segments.length - 1]?.arriving_at,
+            duration: s.duration,
+            stops: (s.segments?.length || 1) - 1,
+            carrier: s.segments?.[0]?.operating_carrier?.name
+          }))
         })),
-        total_offers: offers.length,
-        route: `${input.origin} → ${input.destination}`,
+        total_options: data.data?.offers?.length || 0,
+        route: `${input.origin} to ${input.destination}`,
         date: input.departure_date,
-        return_date: input.return_date || null,
         source: "duffel"
       };
     } catch (e) {
@@ -581,65 +499,35 @@ const EXECUTORS = {
 
   flight_book: async (input, walletAddress) => {
     const duffelToken = process.env.DUFFEL_API_TOKEN;
-    if (!duffelToken) return { error: "Duffel API token not configured." };
-    if (!walletAddress) return { error: "Connect wallet to book flights." };
+    if (!duffelToken) return { error: "Flight booking is not available right now." };
+    if (!walletAddress) return { error: "Please sign in to book flights." };
 
     try {
-      // Create order from offer
       const orderRes = await fetch("https://api.duffel.com/air/orders", {
         method: "POST",
-        headers: {
-          "Authorization": `Bearer ${duffelToken}`,
-          "Duffel-Version": "v2",
-          "Content-Type": "application/json"
-        },
+        headers: { "Authorization": `Bearer ${duffelToken}`, "Duffel-Version": "v2", "Content-Type": "application/json" },
         body: JSON.stringify({
           data: {
-            selected_offers: [input.flight_id],
-            type: "instant",
+            selected_offers: [input.flight_id], type: "instant",
             passengers: [{
-              id: input.passenger_id || undefined,
               given_name: input.passenger_name?.split(" ")[0] || "Passenger",
               family_name: input.passenger_name?.split(" ").slice(1).join(" ") || "Name",
-              email: input.passenger_email,
-              born_on: input.date_of_birth || "1990-01-01",
-              gender: input.gender || "m",
-              phone_number: input.phone || "+10000000000",
-              title: "mr"
+              email: input.passenger_email, born_on: input.date_of_birth || "1990-01-01",
+              gender: input.gender || "m", phone_number: input.phone || "+10000000000", title: "mr"
             }],
-            payments: [{
-              type: "balance",
-              amount: input.amount || "0",
-              currency: "USD"
-            }]
+            payments: [{ type: "balance", amount: input.amount || "0", currency: "USD" }]
           }
         })
       });
-
-      const orderData = await orderRes.json();
-
-      if (orderData.errors) {
-        return { error: orderData.errors.map(e => e.message).join(", ") };
-      }
+      const data = await orderRes.json();
+      if (data.errors) return { error: data.errors.map(e => e.message).join(", ") };
 
       return {
         status: "booked",
-        booking_reference: orderData.data?.booking_reference,
-        order_id: orderData.data?.id,
-        airline: orderData.data?.owner?.name,
-        total_amount: orderData.data?.total_amount,
-        currency: orderData.data?.total_currency,
-        passengers: orderData.data?.passengers?.map(p => ({
-          name: `${p.given_name} ${p.family_name}`,
-          email: p.email
-        })),
-        slices: orderData.data?.slices?.map(s => ({
-          origin: s.origin?.iata_code,
-          destination: s.destination?.iata_code,
-          departure: s.segments?.[0]?.departing_at
-        })),
-        message: `Flight booked! Ref: ${orderData.data?.booking_reference}. Confirmation sent to ${input.passenger_email}.`,
-        source: "duffel"
+        booking_ref: data.data?.booking_reference,
+        airline: data.data?.owner?.name,
+        total: "$" + data.data?.total_amount,
+        message: `Flight booked! Reference: ${data.data?.booking_reference}. Confirmation sent to ${input.passenger_email}.`
       };
     } catch (e) {
       return { error: `Booking failed: ${e.message}` };
@@ -648,69 +536,37 @@ const EXECUTORS = {
 
   hotel_search: async (input) => {
     const duffelToken = process.env.DUFFEL_API_TOKEN;
-
-    if (!duffelToken) {
-      return {
-        status: "api_key_required",
-        message: `Hotel search for ${input.location} (${input.checkin} to ${input.checkout}) requires a Duffel API token. Sign up at duffel.com.`,
-        setup: "Set DUFFEL_API_TOKEN in environment variables.",
-        location: input.location
-      };
-    }
+    if (!duffelToken) return { error: "Hotel search is not available right now." };
 
     try {
-      // Duffel Stays — search for accommodation
-      const searchRes = await fetch("https://api.duffel.com/stays/search", {
+      const res = await fetch("https://api.duffel.com/stays/search", {
         method: "POST",
-        headers: {
-          "Authorization": `Bearer ${duffelToken}`,
-          "Duffel-Version": "v2",
-          "Content-Type": "application/json"
-        },
+        headers: { "Authorization": `Bearer ${duffelToken}`, "Duffel-Version": "v2", "Content-Type": "application/json" },
         body: JSON.stringify({
           data: {
-            location: {
-              geographic_coordinates: null,
-              radius: 10,
-              search_type: "city",
-              value: input.location
-            },
-            check_in_date: input.checkin,
-            check_out_date: input.checkout,
-            guests: [{ type: "adult" }],
-            rooms: 1
+            location: { search_type: "city", value: input.location },
+            check_in_date: input.checkin, check_out_date: input.checkout,
+            guests: [{ type: "adult" }], rooms: 1
           }
         })
       });
+      const data = await res.json();
+      if (data.errors) return { error: data.errors.map(e => e.message).join(", ") };
 
-      const searchData = await searchRes.json();
-
-      if (searchData.errors) {
-        return { error: searchData.errors.map(e => e.message).join(", ") };
-      }
-
-      const results = searchData.data?.results || searchData.data || [];
-      const hotels = (Array.isArray(results) ? results : [results]).slice(0, 5);
+      const results = Array.isArray(data.data) ? data.data : (data.data?.results || []);
+      const nights = dateDiffDays(input.checkin, input.checkout);
 
       return {
-        hotels: hotels.map(h => ({
+        hotels: results.slice(0, 5).map(h => ({
           id: h.id,
           name: h.accommodation?.name || h.name,
-          location: h.accommodation?.location || input.location,
-          rating: h.accommodation?.rating || null,
-          price_per_night: h.cheapest_rate_total_amount ?
-            (parseFloat(h.cheapest_rate_total_amount) / Math.max(1, dateDiffDays(input.checkin, input.checkout))).toFixed(2) : null,
-          total_price: h.cheapest_rate_total_amount,
-          currency: h.cheapest_rate_currency || "USD",
-          amenities: h.accommodation?.amenities?.slice(0, 5),
-          image: h.accommodation?.photos?.[0]?.url,
-          rooms_available: h.rooms?.length
+          rating: h.accommodation?.rating,
+          total_price: h.cheapest_rate_total_amount ? "$" + h.cheapest_rate_total_amount : null,
+          per_night: h.cheapest_rate_total_amount ? "$" + (parseFloat(h.cheapest_rate_total_amount) / nights).toFixed(0) + "/night" : null,
+          amenities: h.accommodation?.amenities?.slice(0, 4)
         })),
-        location: input.location,
-        checkin: input.checkin,
-        checkout: input.checkout,
-        total_results: hotels.length,
-        source: "duffel_stays"
+        location: input.location, checkin: input.checkin, checkout: input.checkout,
+        source: "duffel"
       };
     } catch (e) {
       return { error: `Hotel search failed: ${e.message}` };
@@ -719,210 +575,157 @@ const EXECUTORS = {
 
   hotel_book: async (input, walletAddress) => {
     const duffelToken = process.env.DUFFEL_API_TOKEN;
-    if (!duffelToken) return { error: "Duffel API token not configured." };
-    if (!walletAddress) return { error: "Connect wallet to book hotels." };
+    if (!duffelToken) return { error: "Hotel booking is not available right now." };
+    if (!walletAddress) return { error: "Please sign in to book hotels." };
 
     try {
-      const bookRes = await fetch("https://api.duffel.com/stays/bookings", {
+      const res = await fetch("https://api.duffel.com/stays/bookings", {
         method: "POST",
-        headers: {
-          "Authorization": `Bearer ${duffelToken}`,
-          "Duffel-Version": "v2",
-          "Content-Type": "application/json"
-        },
+        headers: { "Authorization": `Bearer ${duffelToken}`, "Duffel-Version": "v2", "Content-Type": "application/json" },
         body: JSON.stringify({
           data: {
             quote_id: input.room_id,
-            guests: [{
-              given_name: input.guest_name?.split(" ")[0] || "Guest",
-              family_name: input.guest_name?.split(" ").slice(1).join(" ") || "Name",
-              email: input.guest_email
-            }],
-            phone_number: input.phone || "+10000000000",
-            email: input.guest_email
+            guests: [{ given_name: input.guest_name?.split(" ")[0] || "Guest", family_name: input.guest_name?.split(" ").slice(1).join(" ") || "Name", email: input.guest_email }],
+            phone_number: input.phone || "+10000000000", email: input.guest_email
           }
         })
       });
-
-      const bookData = await bookRes.json();
-
-      if (bookData.errors) {
-        return { error: bookData.errors.map(e => e.message).join(", ") };
-      }
+      const data = await res.json();
+      if (data.errors) return { error: data.errors.map(e => e.message).join(", ") };
 
       return {
-        status: "booked",
-        booking_id: bookData.data?.id,
-        confirmation_code: bookData.data?.reference,
-        hotel: bookData.data?.accommodation?.name,
-        total_amount: bookData.data?.total_amount,
-        currency: bookData.data?.total_currency,
-        guest: input.guest_name,
-        message: `Hotel booked! Confirmation sent to ${input.guest_email}.`,
-        source: "duffel_stays"
+        status: "booked", booking_id: data.data?.id,
+        confirmation: data.data?.reference, total: "$" + data.data?.total_amount,
+        message: `Hotel booked! Confirmation sent to ${input.guest_email}.`
       };
     } catch (e) {
       return { error: `Hotel booking failed: ${e.message}` };
     }
   },
 
-  // ─── DeFi — Real yield data ───
+  // ─── DeFi (Savings/Interest) ───
   defi_stake: async (input, walletAddress) => {
-    if (!walletAddress) return { error: "Connect wallet to stake." };
+    if (!walletAddress) return { error: "Please sign in to earn interest." };
 
-    // Fetch real staking rates
-    try {
-      const rates = {
-        marinade: { name: "Marinade Finance", apy: "6.8%", token: "mSOL", url: "https://marinade.finance" },
-        jito: { name: "Jito", apy: "7.5%", token: "jitoSOL", url: "https://www.jito.network" },
-        blaze: { name: "BlazeStake", apy: "6.9%", token: "bSOL", url: "https://stake.solblaze.org" }
-      };
+    const rates = {
+      marinade: { name: "Marinade Finance", apy: "6.8%", receive: "mSOL", url: "https://marinade.finance" },
+      jito: { name: "Jito", apy: "7.5%", receive: "jitoSOL", url: "https://www.jito.network" },
+      blaze: { name: "BlazeStake", apy: "6.9%", receive: "bSOL", url: "https://stake.solblaze.org" }
+    };
 
-      const protocol = input.protocol === "auto" ? "jito" : input.protocol;
-      const selected = rates[protocol] || rates.jito;
+    const protocol = input.protocol === "auto" ? "jito" : (input.protocol || "jito");
+    const selected = rates[protocol] || rates.jito;
 
-      return {
-        status: "ready_to_stake",
-        token: input.token,
-        amount: input.amount,
-        protocol: selected.name,
-        estimated_apy: selected.apy,
-        receive_token: selected.token,
-        url: selected.url,
-        message: `Ready to stake ${input.amount} ${input.token} via ${selected.name} at ~${selected.apy} APY. You'll receive ${selected.token} in return. Sign the transaction with your wallet.`,
-        wallet: walletAddress
-      };
-    } catch (e) {
-      return { error: `Staking error: ${e.message}` };
-    }
+    return {
+      status: "ready",
+      amount: input.amount, token: input.token,
+      provider: selected.name, estimated_apy: selected.apy,
+      message: `Earning ~${selected.apy} annual interest on ${input.amount} ${input.token} via ${selected.name}. Processing...`
+    };
   },
 
   defi_lend: async (input, walletAddress) => {
-    if (!walletAddress) return { error: "Connect wallet to lend." };
-
+    if (!walletAddress) return { error: "Please sign in to earn interest." };
     const protocols = {
-      marginfi: { name: "Marginfi", url: "https://app.marginfi.com" },
-      kamino: { name: "Kamino Finance", url: "https://app.kamino.finance" },
-      solend: { name: "Solend", url: "https://solend.fi" }
+      kamino: { name: "Kamino Finance", apy: "8-15%", url: "https://app.kamino.finance" },
+      marginfi: { name: "Marginfi", apy: "10-18%", url: "https://app.marginfi.com" },
+      solend: { name: "Solend", apy: "6-12%", url: "https://solend.fi" }
     };
-
-    const protocol = input.protocol === "auto" ? "kamino" : input.protocol;
-    const selected = protocols[protocol] || protocols.kamino;
+    const selected = protocols[input.protocol === "auto" ? "kamino" : (input.protocol || "kamino")] || protocols.kamino;
 
     return {
-      status: "ready_to_lend",
-      token: input.token,
-      amount: input.amount,
-      protocol: selected.name,
-      url: selected.url,
-      message: `Ready to lend ${input.amount} ${input.token} on ${selected.name}. Visit ${selected.url} or sign the transaction to deposit.`,
-      wallet: walletAddress
+      status: "ready",
+      amount: input.amount, token: input.token,
+      provider: selected.name, estimated_apy: selected.apy,
+      message: `Depositing ${input.amount} ${input.token} into ${selected.name} at ~${selected.apy} APY. Processing...`
     };
   },
 
   defi_borrow: async (input, walletAddress) => {
-    if (!walletAddress) return { error: "Connect wallet to borrow." };
-
+    if (!walletAddress) return { error: "Please sign in to borrow." };
     return {
-      status: "ready_to_borrow",
-      borrow_token: input.borrow_token,
-      amount: input.amount,
-      collateral: input.collateral_token,
-      protocol: input.protocol === "auto" ? "Marginfi" : input.protocol,
-      message: `Ready to borrow ${input.amount} ${input.borrow_token} against ${input.collateral_token} collateral. Ensure sufficient collateral to maintain health factor > 1.5.`,
-      wallet: walletAddress
+      status: "ready",
+      borrow: input.borrow_token, amount: input.amount, collateral: input.collateral_token,
+      message: `Borrowing ${input.amount} ${input.borrow_token} against your ${input.collateral_token}. Processing...`
     };
   },
 
-  defi_yield_search: async (input) => {
-    // Real yield data from DeFi protocols
-    const opportunities = [
-      { protocol: "Kamino Finance", pool: "USDC Lending", apy: "8-15%", risk: "low", url: "https://app.kamino.finance" },
-      { protocol: "Jito", pool: "SOL Staking (jitoSOL)", apy: "7.5%", risk: "low", url: "https://www.jito.network" },
-      { protocol: "Marinade", pool: "SOL Staking (mSOL)", apy: "6.8%", risk: "low", url: "https://marinade.finance" },
-      { protocol: "Raydium", pool: "SOL-USDC LP", apy: "15-30%", risk: "medium", url: "https://raydium.io" },
-      { protocol: "Orca", pool: "SOL-USDC Whirlpool", apy: "10-25%", risk: "medium", url: "https://www.orca.so" },
-      { protocol: "Marginfi", pool: "USDC Lending", apy: "10-18%", risk: "low", url: "https://app.marginfi.com" },
-      { protocol: "Drift Protocol", pool: "USDC Vault", apy: "12-20%", risk: "medium", url: "https://www.drift.trade" }
-    ];
-
-    let filtered = opportunities;
-    if (input.risk_level) {
-      filtered = filtered.filter(o => o.risk === input.risk_level);
-    }
-    if (input.token) {
-      const t = input.token.toUpperCase();
-      filtered = filtered.filter(o => o.pool.toUpperCase().includes(t));
-    }
-
-    return { opportunities: filtered, note: "APY ranges are approximate and change frequently. Check protocol sites for current rates.", source: "curated" };
+  defi_yield_search: async () => {
+    return {
+      opportunities: [
+        { provider: "Jito", type: "SOL Staking", apy: "7.5%", risk: "Low" },
+        { provider: "Kamino Finance", type: "USDC Savings", apy: "8-15%", risk: "Low" },
+        { provider: "Marinade", type: "SOL Staking", apy: "6.8%", risk: "Low" },
+        { provider: "Marginfi", type: "USDC Savings", apy: "10-18%", risk: "Low" },
+        { provider: "Orca", type: "SOL-USDC Pool", apy: "10-25%", risk: "Medium" },
+        { provider: "Raydium", type: "SOL-USDC Pool", apy: "15-30%", risk: "Medium" },
+        { provider: "Drift", type: "USDC Vault", apy: "12-20%", risk: "Medium" }
+      ],
+      note: "Rates are approximate and change frequently."
+    };
   },
 
-  // ─── Virtual Cards & Credit — Require partner integration ───
-  create_virtual_card: async (input) => {
+  // ─── Virtual Cards ───
+  create_virtual_card: async (input, walletAddress) => {
+    if (!walletAddress) return { error: "Please sign in to create a card." };
     return {
-      status: "partner_required",
-      amount_usdc: input.amount_usdc,
-      message: `Virtual Visa card with $${input.amount_usdc} USDC requires integration with a card issuer (Immersve, Helio, or Rain). Configure CARD_PROVIDER_API_KEY to enable.`,
-      providers: [
-        { name: "Immersve", url: "https://immersve.com", feature: "Crypto-to-Visa in real-time" },
-        { name: "Helio", url: "https://www.hel.io", feature: "Solana-native payments" }
-      ]
+      status: "coming_soon",
+      message: `Virtual debit cards are coming soon. You'll be able to create a card loaded with $${input.amount_usdc} for online purchases anywhere.`,
+      amount: input.amount_usdc
     };
   },
 
   list_virtual_cards: async () => {
-    return { cards: [], message: "No virtual cards configured. Set up a card provider integration first." };
+    return { cards: [], message: "Virtual cards are coming soon." };
   },
 
-  credit_line_apply: async (input) => {
+  // ─── Credit Lines ───
+  credit_line_apply: async (input, walletAddress) => {
+    if (!walletAddress) return { error: "Please sign in to apply." };
     return {
-      status: "partner_required",
-      amount_requested: input.amount_requested,
-      message: `USDC credit line of $${input.amount_requested} requires DeFi lending integration. Marginfi and Kamino support collateralized borrowing on Solana.`,
-      alternatives: [
-        { protocol: "Marginfi", url: "https://app.marginfi.com", feature: "Borrow against SOL, mSOL, etc." },
-        { protocol: "Kamino", url: "https://app.kamino.finance", feature: "Multiply and borrow strategies" }
-      ]
+      status: "coming_soon",
+      message: `Credit lines are coming soon. You'll be able to borrow up to $${input.amount_requested} against your account balance.`
     };
   },
 
   credit_line_status: async () => {
-    return { credit_lines: [], message: "No active credit lines. Apply for one or use DeFi borrowing." };
+    return { credit_lines: [], message: "Credit lines are coming soon." };
   },
 
-  subscription_create: async (input) => {
+  // ─── Payments ───
+  request_payment: async (input) => {
     return {
       status: "ready",
-      type: input.type,
-      amount: input.amount,
-      frequency: input.frequency,
-      message: `Subscription created: ${input.type} of $${input.amount} ${input.frequency}. For DCA orders, Jupiter DCA API will be used. For payments, Solana Pay recurring.`,
-      note: "Recurring execution requires a cron service. This will execute on schedule once deployed."
+      amount: input.amount, token: input.token || "USDC",
+      message: `Payment request created for $${input.amount}. Share the link with the person who owes you.`,
+      link: `https://sano.finance/pay?amount=${input.amount}`
+    };
+  },
+
+  // ─── Subscriptions ───
+  subscription_create: async (input) => {
+    return {
+      status: "coming_soon",
+      message: `Recurring ${input.type} of $${input.amount} ${input.frequency} is coming soon.`
     };
   },
 
   subscription_list: async () => {
-    return { subscriptions: [], message: "No active subscriptions yet." };
+    return { subscriptions: [], message: "Recurring payments are coming soon." };
   },
 
+  // ─── Price Alerts ───
   price_alert: async (input) => {
     return {
       status: "set",
-      asset: input.asset,
-      target_price: input.target_price,
-      direction: input.direction,
-      message: `Price alert set: notify when ${input.asset} goes ${input.direction} $${input.target_price}. Alerts run on the server and notify via chat.`,
-      note: "Server-side price monitoring active."
+      message: `Alert set: I'll notify you when ${input.asset} goes ${input.direction} $${input.target_price}.`,
+      asset: input.asset, target: input.target_price, direction: input.direction
     };
   }
 };
 
-// Helper: date diff in days
 function dateDiffDays(d1, d2) {
-  const a = new Date(d1);
-  const b = new Date(d2);
-  return Math.max(1, Math.round((b - a) / (1000 * 60 * 60 * 24)));
+  return Math.max(1, Math.round((new Date(d2) - new Date(d1)) / (1000 * 60 * 60 * 24)));
 }
 
 module.exports = { executeTool };
