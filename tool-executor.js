@@ -849,15 +849,59 @@ const EXECUTORS = {
       const tx = VersionedTransaction.deserialize(txBuf);
       tx.sign([keypair]);
 
-      const signature = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
-      // Use 'processed' instead of 'confirmed' for faster UX (~2s vs 10s)
-      const confirmation = await connection.confirmTransaction(signature, "processed");
+      let signature;
+      try {
+        signature = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
+      } catch (sendErr) {
+        return { error: `Couldn't submit the trade: ${sendErr.message}` };
+      }
 
-      if (confirmation.value?.err) {
+      // Poll signature status for up to ~12s instead of one big blocking confirm.
+      // If we never get a confirmed status, return success-pending so the user
+      // can see the signature and check Solscan — instead of a hard error.
+      let confirmed = false;
+      let onchainErr = null;
+      const start = Date.now();
+      while (Date.now() - start < 12000) {
+        try {
+          const st = await connection.getSignatureStatus(signature, { searchTransactionHistory: false });
+          const v = st?.value;
+          if (v) {
+            if (v.err) { onchainErr = v.err; break; }
+            if (v.confirmationStatus === "processed" || v.confirmationStatus === "confirmed" || v.confirmationStatus === "finalized") {
+              confirmed = true; break;
+            }
+          }
+        } catch {}
+        await new Promise(r => setTimeout(r, 800));
+      }
+
+      if (onchainErr) {
         return {
           status: "failed",
           message: `Trade failed on-chain.`,
           signature, explorer: `https://solscan.io/tx/${signature}`
+        };
+      }
+
+      if (!confirmed) {
+        // Network is slow but the tx is in flight — surface the signature
+        const outputDecimals = input.side === "buy" ? 8 : 6;
+        const expected = parseInt(quote.outAmount) / (10 ** outputDecimals);
+        return {
+          ui_type: "trade_receipt",
+          status: "pending",
+          side: input.side, symbol,
+          amount_usd: parseFloat((amount || 0).toFixed(2)),
+          shares_received: input.side === "buy" ? expected : null,
+          usd_received: input.side === "sell" ? expected : null,
+          signature,
+          explorer: `https://solscan.io/tx/${signature}`,
+          message: `Trade submitted but Solana is slow to confirm. Check explorer in a moment — your balance will update once it lands.`,
+          actions: [
+            { label: "View on Solscan", prompt: `open https://solscan.io/tx/${signature}` },
+            { label: "Refresh balance", prompt: "what's my balance" }
+          ]
         };
       }
 
@@ -890,6 +934,24 @@ const EXECUTORS = {
     } catch (e) {
       if (e.message?.includes("insufficient") || e.message?.includes("0x1")) {
         return { error: `Not enough ${input.side === "buy" ? "USDC" : symbol} in your account.` };
+      }
+      // Solana confirm timeout — the tx may still land. Surface the signature if we have it.
+      const sigMatch = e.message?.match(/signature ([1-9A-HJ-NP-Za-km-z]{40,90})/);
+      if (e.message?.includes("not confirmed") && sigMatch) {
+        const sig = sigMatch[1];
+        return {
+          ui_type: "trade_receipt",
+          status: "pending",
+          side: input.side, symbol,
+          amount_usd: parseFloat((amount || 0).toFixed(2)),
+          signature: sig,
+          explorer: `https://solscan.io/tx/${sig}`,
+          message: `Trade submitted but Solana is slow to confirm. Check the explorer link.`,
+          actions: [
+            { label: "View on Solscan", prompt: `open https://solscan.io/tx/${sig}` },
+            { label: "Refresh balance", prompt: "what's my balance" }
+          ]
+        };
       }
       console.error("  [STOCK] Error:", e.message);
       return { error: `Trade failed: ${e.message}` };
