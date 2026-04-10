@@ -514,7 +514,7 @@ WHAT WORKS TODAY (stable):
 - Crypto swaps on Solana
 - Sending money (SOL/SPL transfers)
 - Product search across stores
-- Prediction markets via Jupiter Predict (Polymarket + Kalshi liquidity, real betting on Solana — no bridging)
+- Prediction markets via Jupiter Predict — search/browse works everywhere; bet placement blocked from US/Korea IPs by Jupiter (regulatory). When prediction_bet returns region_blocked: true, tell the user clearly that betting is regionally restricted from our servers and give them the polymarket_url to bet directly on Polymarket.
 - Price checks, balance checks, transaction history
 - Credential storage
 - Persistent memory

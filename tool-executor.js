@@ -908,11 +908,36 @@ const EXECUTORS = {
       });
 
       const orderData = await orderRes.json();
-      if (orderData.error) return { error: orderData.error };
+
+      // Detect Jupiter's region restriction (US and South Korea blocked)
+      if (orderData.code === "unsupported_region" || orderData.message?.includes("not available in your region")) {
+        // Try to find the Polymarket slug for a deep link
+        let polyUrl = "https://polymarket.com";
+        try {
+          const marketInfoRes = await fetch(`https://api.jup.ag/prediction/v1/markets/${input.market_id}`);
+          const marketInfo = await marketInfoRes.json();
+          // Search for the parent event
+          if (marketInfo.eventId) {
+            const eventRes = await fetch(`https://api.jup.ag/prediction/v1/events/${marketInfo.eventId}`);
+            const event = await eventRes.json();
+            if (event.metadata?.slug) {
+              polyUrl = `https://polymarket.com/event/${event.metadata.slug}`;
+            }
+          }
+        } catch (e) {}
+
+        return {
+          error: `Jupiter blocks bet placement from US/Korea IPs (regulatory restriction). The market exists and you can bet on it directly at Polymarket. Open: ${polyUrl}`,
+          region_blocked: true,
+          polymarket_url: polyUrl
+        };
+      }
+
+      if (orderData.error) return { error: typeof orderData.error === "string" ? orderData.error : JSON.stringify(orderData.error) };
       const txB64 = orderData.transaction || orderData.tx || orderData.serializedTransaction;
       if (!txB64) {
         console.log("  [BET] No transaction in response:", JSON.stringify(orderData).slice(0, 300));
-        return { error: "Couldn't build the bet order. Try a different amount or market." };
+        return { error: orderData.message || "Couldn't build the bet order. Try a different amount or market." };
       }
 
       // 3. Sign and submit
