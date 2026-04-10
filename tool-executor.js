@@ -843,21 +843,24 @@ const EXECUTORS = {
           const openMarkets = (ev.markets || []).filter(mk => mk.status === "open");
           // For events with multiple sub-markets (like "what price will BTC hit"),
           // include all of them so the user can pick
-          const subMarkets = openMarkets.slice(0, 5).map(mk => ({
+          const eventTitle = m.title || "Untitled";
+          const subMarkets = openMarkets.slice(0, 8).map(mk => ({
             market_id: mk.marketId,
             title: mk.title,
+            event: eventTitle,  // so the agent knows which event this market belongs to
             yes_price: mk.pricing?.buyYesPriceUsd ? "$" + (mk.pricing.buyYesPriceUsd / 1_000_000).toFixed(2) : null,
             no_price: mk.pricing?.buyNoPriceUsd ? "$" + (mk.pricing.buyNoPriceUsd / 1_000_000).toFixed(2) : null
           }));
 
           return {
             event_id: ev.eventId,
-            title: m.title || "Untitled",
+            title: eventTitle,
             category: ev.category,
             volume_usd: ev.volumeUsd ? "$" + Math.round(parseFloat(ev.volumeUsd) / 1_000_000).toLocaleString() : null,
             markets: subMarkets,
             close_time: m.closeTime,
-            image_url: m.imageUrl
+            image_url: m.imageUrl,
+            note: `Use the market_id (e.g. ${subMarkets[0]?.market_id}) from the markets array when calling prediction_bet.`
           };
         }),
         source: "jupiter_predict"
@@ -892,8 +895,8 @@ const EXECUTORS = {
 
       // 2. Build the order request — Jupiter returns a base64 Solana tx
       const usdcMint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-      // Enforce minimum $1 order
-      const betAmount = Math.max(input.amount_usdc || 0, 1);
+      // Jupiter requires >$1 minimum — use $1.50 floor to account for fees/rounding
+      const betAmount = Math.max(input.amount_usdc || 0, 1.5);
       const depositAmount = String(Math.round(betAmount * 1_000_000));
       console.log(`  [BET] Placing: $${betAmount} (${depositAmount} native) on ${isYes ? "YES" : "NO"} for ${input.market_id}`);
 
