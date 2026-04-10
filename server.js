@@ -456,49 +456,39 @@ app.post("/api/wallet/export", async (req, res) => {
   }
 });
 
-// ─── Wallet Balance (with caching) ───
+// ─── Wallet Balance — full multi-chain holdings via wallet_balance tool ───
 app.post("/api/wallet/balance", async (req, res) => {
   try {
     const { address } = req.body;
     if (!address) return res.json({ error: "No address" });
 
-    // Check cache
-    const cached = getCachedPrice(`balance:${address}`);
-    if (cached) return res.json(cached);
+    // Use the proper tool which knows about Token-2022, xStocks, prices, etc.
+    const result = await executeTool("wallet_balance", { address }, address, null, {});
 
-    const pubkey = new PublicKey(address);
-    const balance = await connection.getBalance(pubkey);
-    const solAmount = balance / LAMPORTS_PER_SOL;
-
-    // USDC
-    const USDC_MINT = new PublicKey("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
-    let usdcBalance = 0;
-    try {
-      const tokenAccounts = await connection.getParsedTokenAccountsByOwner(pubkey, { mint: USDC_MINT });
-      if (tokenAccounts.value.length > 0) {
-        usdcBalance = parseFloat(tokenAccounts.value[0].account.data.parsed.info.tokenAmount.uiAmountString || "0");
-      }
-    } catch (e) {}
-
-    // SOL price
-    let solPrice = 0;
-    const cachedSolPrice = getCachedPrice("sol_price");
-    if (cachedSolPrice) {
-      solPrice = cachedSolPrice;
-    } else {
-      try {
-        const priceRes = await fetch("https://api.jup.ag/price/v2?ids=So11111111111111111111111111111111111111112");
-        const priceData = await priceRes.json();
-        solPrice = parseFloat(priceData.data?.["So11111111111111111111111111111111111111112"]?.price || 0);
-        setCachedPrice("sol_price", solPrice);
-      } catch (e) {}
-    }
-
-    const result = { sol: solAmount, usdc: usdcBalance, sol_price: solPrice, address };
-    setCachedPrice(`balance:${address}`, result);
-    res.json(result);
+    // Backward compat: flat sol/usdc fields for the sidebar balance display
+    const usdcHolding = (result.cash_holdings || []).find(c => c.token === "USDC");
+    res.json({
+      ...result,
+      sol: result.sol_balance || 0,
+      usdc: usdcHolding?.balance || 0,
+      sol_price: result.sol_balance > 0 ? (result.sol_value_usd / result.sol_balance) : 0,
+      address
+    });
   } catch (e) {
     res.json({ error: e.message });
+  }
+});
+
+// ─── Prediction positions (Jupiter Predict) ───
+app.get("/api/predictions/positions", async (req, res) => {
+  try {
+    const owner = req.query.owner;
+    if (!owner) return res.json({ positions: [] });
+    const r = await fetch(`https://api.jup.ag/prediction/v1/positions?ownerPubkey=${owner}`);
+    const data = await r.json();
+    res.json({ positions: data.data || data || [] });
+  } catch (e) {
+    res.json({ positions: [], error: e.message });
   }
 });
 

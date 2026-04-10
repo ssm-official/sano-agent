@@ -1183,6 +1183,9 @@ html.dark {
 }
 .position-icon.crypto { background: #fef3c7; color: #ca8a04; }
 .position-icon.stock { background: var(--accent-light); color: var(--accent); }
+.position-icon.prediction { background: #ddd6fe; color: #6d28d9; }
+html.dark .position-icon.crypto { background: rgba(202, 138, 4, 0.2); color: #fbbf24; }
+html.dark .position-icon.prediction { background: rgba(109, 40, 217, 0.25); color: #a78bfa; }
 
 .position-info {
   flex: 1;

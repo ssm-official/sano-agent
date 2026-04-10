@@ -260,13 +260,21 @@ async function loadPortfolio() {
     return;
   }
   try {
-    const res = await fetch("/api/wallet/balance", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ address: walletAddress })
-    });
-    const data = await res.json();
-    portfolioData = data;
+    // Fetch wallet balance + prediction positions in parallel
+    const [walletRes, predRes] = await Promise.all([
+      fetch("/api/wallet/balance", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ address: walletAddress })
+      }),
+      fetch(`/api/predictions/positions?owner=${walletAddress}`)
+    ]);
+    const walletData = await walletRes.json();
+    const predData = await predRes.json();
+    portfolioData = {
+      ...walletData,
+      prediction_positions: predData.positions || []
+    };
     renderPortfolio();
   } catch (e) {
     $("#portfolio-positions").innerHTML = `<div class="portfolio-empty">Couldn't load portfolio</div>`;
@@ -275,38 +283,34 @@ async function loadPortfolio() {
 
 function renderPortfolio() {
   if (!portfolioData) return;
-  const total = portfolioData.total_usd || 0;
-  $("#portfolio-total").textContent = "$" + total.toFixed(2);
-  // No P&L tracking yet — show flat
-  $("#portfolio-pnl").textContent = "Holdings overview";
-  $("#portfolio-pnl").className = "portfolio-pnl flat";
 
   const cash = portfolioData.cash_holdings || [];
   const stocks = portfolioData.stock_holdings || [];
+  const predictions = portfolioData.prediction_positions || [];
   const sol = portfolioData.sol_balance || 0;
   const solUsd = portfolioData.sol_value_usd || 0;
 
   let positions = [];
 
-  // Add SOL as a crypto position if non-zero
-  if (sol > 0.001) {
+  // SOL
+  if (sol > 0.0001) {
     positions.push({
       type: "crypto",
       symbol: "SOL",
       name: "Solana",
-      amount: sol.toFixed(4),
+      amount: sol.toFixed(4) + " SOL",
       value_usd: solUsd
     });
   }
 
-  // Cash holdings (stablecoins, other tokens)
+  // Cash / crypto holdings
   for (const c of cash) {
-    if ((c.value_usd || 0) < 0.01) continue;
+    if ((c.value_usd || 0) < 0.01 && c.token !== "USDC" && c.token !== "USDT") continue;
     positions.push({
       type: "crypto",
       symbol: c.token,
       name: c.token,
-      amount: c.balance.toFixed(c.token === "USDC" || c.token === "USDT" ? 2 : 4),
+      amount: c.balance.toFixed(c.token === "USDC" || c.token === "USDT" ? 2 : 4) + " " + c.token,
       value_usd: c.value_usd || 0
     });
   }
@@ -317,14 +321,37 @@ function renderPortfolio() {
       type: "stock",
       symbol: s.ticker,
       name: s.ticker,
-      amount: s.shares.toFixed(6) + " sh",
+      amount: s.shares.toFixed(6) + " shares",
       value_usd: s.value_usd || 0
     });
   }
 
+  // Prediction positions
+  for (const p of predictions) {
+    const sideRaw = p.isYes !== undefined ? (p.isYes ? "YES" : "NO") : (p.side || "");
+    // Jupiter uses 1,000,000 native units = $1.00
+    const valueUsd = (p.valueUsd || p.value_usd || 0) / 1_000_000;
+    const contracts = p.contracts || p.amount || 0;
+    positions.push({
+      type: "prediction",
+      symbol: sideRaw || "BET",
+      name: (p.marketTitle || p.title || p.market_id || "Prediction") + (sideRaw ? ` · ${sideRaw}` : ""),
+      amount: contracts ? `${contracts} contracts` : "—",
+      value_usd: valueUsd,
+      market_id: p.marketId || p.market_id
+    });
+  }
+
+  // Total
+  const totalUsd = positions.reduce((s, p) => s + (p.value_usd || 0), 0);
+  $("#portfolio-total").textContent = "$" + totalUsd.toFixed(2);
+  $("#portfolio-pnl").textContent = `${positions.length} ${positions.length === 1 ? "position" : "positions"}`;
+  $("#portfolio-pnl").className = "portfolio-pnl flat";
+
   // Filter by tab
   if (currentPortfolioTab === "stocks") positions = positions.filter(p => p.type === "stock");
   if (currentPortfolioTab === "crypto") positions = positions.filter(p => p.type === "crypto");
+  if (currentPortfolioTab === "predictions") positions = positions.filter(p => p.type === "prediction");
 
   if (positions.length === 0) {
     $("#portfolio-positions").innerHTML = `<div class="portfolio-empty">No positions yet. Add funds and buy something to start.</div>`;
@@ -336,7 +363,7 @@ function renderPortfolio() {
 
   const html = positions.map(p => `
     <div class="position-row">
-      <div class="position-icon ${p.type}">${p.symbol.slice(0, 4)}</div>
+      <div class="position-icon ${p.type}">${esc(p.symbol.slice(0, 4))}</div>
       <div class="position-info">
         <div class="position-name">${esc(p.name)}</div>
         <div class="position-amount">${esc(p.amount)}</div>
@@ -345,7 +372,7 @@ function renderPortfolio() {
         <div class="position-usd">$${p.value_usd.toFixed(2)}</div>
       </div>
       <div class="position-actions">
-        <button class="position-sell-btn" data-symbol="${esc(p.symbol)}" data-type="${p.type}">Sell</button>
+        <button class="position-sell-btn" data-symbol="${esc(p.symbol)}" data-type="${p.type}" data-market="${esc(p.market_id || '')}">Sell</button>
       </div>
     </div>
   `).join("");
