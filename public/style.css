@@ -1478,6 +1478,56 @@ html.dark .position-icon.prediction { background: rgba(109, 40, 217, 0.25); colo
 ::-webkit-scrollbar-thumb { background: var(--bg-4); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-4); }
 
+/* ─── Action chips (inline buy/do buttons under tool results) ─── */
+.action-strip {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  margin: 8px 0 4px;
+}
+.action-chip {
+  background: var(--bg-2); border: 1px solid var(--border);
+  border-radius: 999px; padding: 6px 12px;
+  font-size: 12px; font-weight: 500; color: var(--text);
+  cursor: pointer; transition: all 0.15s ease;
+}
+.action-chip:hover {
+  background: var(--accent-soft); border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* ─── Stock card ─── */
+.stock-card {
+  margin: 10px 0; padding: 14px 16px;
+  background: var(--bg-2); border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.stock-card-head { display: flex; align-items: baseline; gap: 8px; }
+.stock-card-symbol { font-size: 16px; font-weight: 700; color: var(--text); }
+.stock-card-name { font-size: 12px; color: var(--text-3); }
+.stock-card-price-row { display: flex; align-items: baseline; gap: 10px; margin-top: 4px; }
+.stock-card-price { font-size: 22px; font-weight: 700; font-family: var(--mono); color: var(--text); }
+.stock-card-change { font-size: 13px; font-weight: 600; }
+.stock-card-change.up { color: var(--green); }
+.stock-card-change.down { color: var(--red); }
+.stock-card-change.flat { color: var(--text-3); }
+.stock-card-meta { font-size: 11px; color: var(--text-3); margin-top: 4px; }
+
+/* ─── Order list ─── */
+.order-list { margin: 10px 0; display: flex; flex-direction: column; gap: 6px; }
+.order-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 14px; background: var(--bg-2);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+}
+.order-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.order-sub { font-size: 11px; color: var(--text-3); margin-top: 2px; }
+.order-cancel {
+  background: transparent; border: 1px solid var(--border);
+  border-radius: 6px; padding: 4px 10px; font-size: 11px;
+  color: var(--text-2); cursor: pointer;
+}
+.order-cancel:hover { background: var(--red-soft); color: var(--red); border-color: var(--red); }
+.order-empty { font-size: 12px; color: var(--text-3); padding: 12px; text-align: center; }
+
 /* ─── Mobile ─── */
 .mobile-only { display: none; }
 

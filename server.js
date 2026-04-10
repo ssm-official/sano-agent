@@ -14,6 +14,10 @@ const store = require("./agent-store");
 const sandbox = require("./sandbox-manager");
 const vault = require("./wallet-vault");
 const credentialsVault = require("./credentials-vault");
+const orders = require("./orders");
+
+// Start the order/alert price poller (runs every 30s in the background)
+orders.startPoller(30000);
 
 // Load the comprehensive agent training doc
 const AGENT_TRAINING = (() => {

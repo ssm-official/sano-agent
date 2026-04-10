@@ -99,17 +99,56 @@ const TOOLS = [
   },
   {
     name: "limit_order",
-    description: "Place a limit order on Jupiter. Executes automatically when price target is hit.",
+    description: "Set a limit order. Buys when price drops to target (side=buy), or sells when price rises to target (side=sell). Server polls Jupiter prices every 30s and executes automatically using the user's vaulted keypair.",
     input_schema: {
       type: "object",
       properties: {
-        input_token: { type: "string" },
-        output_token: { type: "string" },
-        amount: { type: "number" },
-        target_price: { type: "number", description: "Execute when this price is reached" },
-        expiry_hours: { type: "integer", default: 24 }
+        symbol: { type: "string", description: "Stock ticker or token symbol (e.g. AAPL, SOL, BONK)" },
+        side: { type: "string", enum: ["buy", "sell"] },
+        amount_usd: { type: "number", description: "USD value to buy or sell" },
+        target_price: { type: "number", description: "Trigger price in USD" }
       },
-      required: ["input_token", "output_token", "amount", "target_price"]
+      required: ["symbol", "side", "amount_usd", "target_price"]
+    }
+  },
+  {
+    name: "stop_loss",
+    description: "Arm a stop loss on a position. Sells the position automatically if the price falls to or below stop_price. Use when the user already owns a stock/token and wants downside protection.",
+    input_schema: {
+      type: "object",
+      properties: {
+        symbol: { type: "string" },
+        stop_price: { type: "number", description: "Price at which to sell" },
+        amount_usd: { type: "number", description: "Optional. USD amount to sell. Omit to sell entire position." }
+      },
+      required: ["symbol", "stop_price"]
+    }
+  },
+  {
+    name: "take_profit",
+    description: "Arm a take-profit order. Sells the position automatically when the price reaches target_price.",
+    input_schema: {
+      type: "object",
+      properties: {
+        symbol: { type: "string" },
+        target_price: { type: "number", description: "Price at which to sell" },
+        amount_usd: { type: "number", description: "Optional. USD amount to sell. Omit to sell entire position." }
+      },
+      required: ["symbol", "target_price"]
+    }
+  },
+  {
+    name: "list_orders",
+    description: "List all of the user's active limit orders, stop losses, take profits and price alerts.",
+    input_schema: { type: "object", properties: {}, required: [] }
+  },
+  {
+    name: "cancel_order",
+    description: "Cancel an active order by id (returned from limit_order/stop_loss/take_profit/price_alert).",
+    input_schema: {
+      type: "object",
+      properties: { order_id: { type: "string" } },
+      required: ["order_id"]
     }
   },
 
@@ -129,7 +168,7 @@ const TOOLS = [
   },
   {
     name: "stock_quote",
-    description: "Get real-time quote for stocks, commodities, or ETFs.",
+    description: "Get real-time price for a stock or crypto. Returns price, 24h change, market cap, and renders a stock card with buy/alert buttons. Only call when the user asks for a SPECIFIC ticker (e.g. AAPL, TSLA). Don't call on single letters or vague inputs.",
     input_schema: {
       type: "object",
       properties: {
@@ -412,7 +451,7 @@ const TOOLS = [
 const TOOL_CATEGORIES = {
   "Shopping": ["product_search", "buy_product", "buy_gift_card", "list_gift_card_merchants"],
   "Stocks": ["stock_trade", "stock_quote"],
-  "Trading": ["jupiter_swap", "jupiter_quote", "token_price", "limit_order"],
+  "Trading": ["jupiter_swap", "jupiter_quote", "token_price", "limit_order", "stop_loss", "take_profit", "list_orders", "cancel_order"],
   "Prediction Markets": ["prediction_bet", "prediction_search"],
   "Payments": ["send_payment", "request_payment"],
   "Earn": ["defi_stake", "defi_lend", "defi_yield_search"],

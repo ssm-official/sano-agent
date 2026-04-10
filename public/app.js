@@ -681,9 +681,88 @@ function finishToolIndicator(el, result, toolName) {
   } else if (result?.ui_type === "trade_receipt") {
     const card = renderTradeReceipt(result);
     el.parentNode.insertBefore(card, el.nextSibling);
+  } else if (result?.ui_type === "stock_card" || (result?.symbol && result?.price && result?.tradeable)) {
+    const card = renderStockCard(result);
+    el.parentNode.insertBefore(card, el.nextSibling);
+  } else if (result?.ui_type === "order_list" && Array.isArray(result.orders)) {
+    const card = renderOrderList(result.orders);
+    el.parentNode.insertBefore(card, el.nextSibling);
+  }
+
+  // Generic action-button strip — any tool result with `actions: [{label, prompt}]`
+  if (Array.isArray(result?.actions) && result.actions.length > 0) {
+    const strip = renderActionButtons(result.actions);
+    // Insert AFTER any rich card we just inserted
+    const anchor = el.nextSibling && el.nextSibling.classList && (el.nextSibling.classList.contains("receipt-card") || el.nextSibling.classList.contains("stock-card") || el.nextSibling.classList.contains("product-grid") || el.nextSibling.classList.contains("order-list"))
+      ? el.nextSibling
+      : el;
+    anchor.parentNode.insertBefore(strip, anchor.nextSibling);
   }
 
   scroll();
+}
+
+function renderActionButtons(actions) {
+  const wrap = document.createElement("div");
+  wrap.className = "action-strip";
+  actions.forEach(a => {
+    if (!a || !a.label) return;
+    const btn = document.createElement("button");
+    btn.className = "action-chip";
+    btn.textContent = a.label;
+    btn.addEventListener("click", () => {
+      if (streaming) return;
+      const prompt = a.prompt || a.label;
+      send(prompt);
+    });
+    wrap.appendChild(btn);
+  });
+  return wrap;
+}
+
+function renderStockCard(r) {
+  const div = document.createElement("div");
+  div.className = "stock-card";
+  const change = r.change_24h || "";
+  const changeNum = parseFloat(String(change).replace("%", "")) || 0;
+  const changeClass = changeNum > 0 ? "up" : changeNum < 0 ? "down" : "flat";
+  div.innerHTML = `
+    <div class="stock-card-head">
+      <div class="stock-card-symbol">${esc(r.symbol)}</div>
+      ${r.name ? `<div class="stock-card-name">${esc(r.name)}</div>` : ""}
+    </div>
+    <div class="stock-card-price-row">
+      <div class="stock-card-price">${esc(r.price)}</div>
+      ${change ? `<div class="stock-card-change ${changeClass}">${esc(change)}</div>` : ""}
+    </div>
+    ${r.mcap ? `<div class="stock-card-meta">Market cap ${esc(r.mcap)}</div>` : ""}
+  `;
+  return div;
+}
+
+function renderOrderList(orders) {
+  const div = document.createElement("div");
+  div.className = "order-list";
+  if (orders.length === 0) {
+    div.innerHTML = `<div class="order-empty">No active orders.</div>`;
+    return div;
+  }
+  div.innerHTML = orders.map(o => `
+    <div class="order-row" data-order-id="${esc(o.id)}">
+      <div class="order-main">
+        <div class="order-title">${esc(o.kind || "ORDER").toUpperCase()} ${esc(o.symbol || "")}</div>
+        <div class="order-sub">${esc(o.description || "")}</div>
+      </div>
+      <button class="order-cancel" data-id="${esc(o.id)}">Cancel</button>
+    </div>
+  `).join("");
+  div.querySelectorAll(".order-cancel").forEach(btn => {
+    btn.addEventListener("click", () => {
+      if (streaming) return;
+      send(`cancel order ${btn.getAttribute("data-id")}`);
+    });
+  });
+  return div;
 }
 
 function renderProductGrid(products) {

@@ -13,6 +13,7 @@ const SOLANA_RPC = process.env.SOLANA_RPC_URL || "https://api.mainnet-beta.solan
 const connection = new Connection(SOLANA_RPC, "confirmed");
 const bitrefill = require("./bitrefill-client");
 const credentials = require("./credentials-vault");
+const orders = require("./orders");
 
 const MINTS = {
   SOL: "So11111111111111111111111111111111111111112",
@@ -612,13 +613,119 @@ const EXECUTORS = {
     }
   },
 
-  // ─── Limit Orders ───
-  limit_order: async (input, walletAddress) => {
+  // ─── Limit Orders / Stops / Take Profit / Alerts ───
+  // All backed by the orders.js engine which polls Jupiter prices every 30s
+  // and executes triggered orders autonomously using the user's vaulted keypair.
+  limit_order: async (input, walletAddress, keypair, context) => {
     if (!walletAddress) return { error: "Please sign in." };
+    if (!context?.userEmail) return { error: "No account context." };
+    const symbol = (input.symbol || input.token || "").toUpperCase();
+    if (!symbol) return { error: "Need a symbol." };
+    const side = (input.side || "buy").toLowerCase();
+    const amount_usd = parseFloat(input.amount_usd || input.amount || 0);
+    const target_price = parseFloat(input.target_price || input.price || 0);
+    if (!amount_usd || !target_price) return { error: "Need amount_usd and target_price." };
+
+    const token = await findTokenBySymbol(symbol);
+    if (!token) return { error: `Couldn't find a tradeable token for ${symbol}.` };
+
+    // Limit BUY: buy when price drops to target (price <= target)
+    // Limit SELL: sell when price rises to target (price >= target)
+    const direction = side === "buy" ? "below" : "above";
+    const order = orders.addOrder({
+      email: context.userEmail,
+      walletAddress,
+      kind: side === "buy" ? "limit_buy" : "limit_sell",
+      symbol: token.symbol || symbol,
+      mint: token.mint,
+      amount_usd,
+      trigger: { direction, price: target_price }
+    });
     return {
-      status: "set", message: `Limit order set: ${input.amount} ${input.input_token} -> ${input.output_token} at $${input.target_price}. Will execute automatically.`,
-      input_token: input.input_token, output_token: input.output_token, amount: input.amount, target_price: input.target_price
+      status: "set",
+      order_id: order.id,
+      message: `Limit ${side} set: $${amount_usd} of ${order.symbol} when price ${direction === "below" ? "drops to" : "rises to"} $${target_price}.`,
+      actions: [
+        { label: "View orders", prompt: "list my orders" },
+        { label: "Cancel", prompt: `cancel order ${order.id}` }
+      ]
     };
+  },
+
+  stop_loss: async (input, walletAddress, keypair, context) => {
+    if (!walletAddress) return { error: "Please sign in." };
+    if (!context?.userEmail) return { error: "No account context." };
+    const symbol = (input.symbol || "").toUpperCase();
+    const stop_price = parseFloat(input.stop_price || input.price || 0);
+    const amount_usd = parseFloat(input.amount_usd || 0); // 0 = sell entire position
+    if (!symbol || !stop_price) return { error: "Need symbol and stop_price." };
+    const token = await findTokenBySymbol(symbol);
+    if (!token) return { error: `Couldn't find ${symbol}.` };
+    const order = orders.addOrder({
+      email: context.userEmail,
+      walletAddress,
+      kind: "stop_loss",
+      symbol: token.symbol || symbol,
+      mint: token.mint,
+      amount_usd: amount_usd || 9999, // sell all
+      trigger: { direction: "below", price: stop_price }
+    });
+    return {
+      status: "set",
+      order_id: order.id,
+      message: `Stop loss armed: sell ${symbol} if price drops to $${stop_price}.`,
+      actions: [{ label: "View orders", prompt: "list my orders" }, { label: "Cancel", prompt: `cancel order ${order.id}` }]
+    };
+  },
+
+  take_profit: async (input, walletAddress, keypair, context) => {
+    if (!walletAddress) return { error: "Please sign in." };
+    if (!context?.userEmail) return { error: "No account context." };
+    const symbol = (input.symbol || "").toUpperCase();
+    const target_price = parseFloat(input.target_price || input.price || 0);
+    const amount_usd = parseFloat(input.amount_usd || 0);
+    if (!symbol || !target_price) return { error: "Need symbol and target_price." };
+    const token = await findTokenBySymbol(symbol);
+    if (!token) return { error: `Couldn't find ${symbol}.` };
+    const order = orders.addOrder({
+      email: context.userEmail,
+      walletAddress,
+      kind: "take_profit",
+      symbol: token.symbol || symbol,
+      mint: token.mint,
+      amount_usd: amount_usd || 9999,
+      trigger: { direction: "above", price: target_price }
+    });
+    return {
+      status: "set",
+      order_id: order.id,
+      message: `Take profit armed: sell ${symbol} when price hits $${target_price}.`,
+      actions: [{ label: "View orders", prompt: "list my orders" }, { label: "Cancel", prompt: `cancel order ${order.id}` }]
+    };
+  },
+
+  list_orders: async (input, walletAddress, keypair, context) => {
+    if (!context?.userEmail) return { error: "No account context." };
+    const all = orders.listOrders(context.userEmail).map(o => ({
+      id: o.id,
+      kind: o.kind,
+      symbol: o.symbol,
+      description: orders.describeOrder(o)
+    }));
+    return {
+      ui_type: "order_list",
+      orders: all,
+      count: all.length,
+      message: all.length === 0 ? "No active orders." : `${all.length} active order${all.length === 1 ? "" : "s"}.`
+    };
+  },
+
+  cancel_order: async (input, walletAddress, keypair, context) => {
+    if (!context?.userEmail) return { error: "No account context." };
+    if (!input.order_id) return { error: "Need order_id." };
+    const cancelled = orders.cancelOrder(context.userEmail, input.order_id);
+    if (!cancelled) return { error: `No order found with id ${input.order_id}.` };
+    return { status: "cancelled", order_id: input.order_id, message: `Order cancelled.` };
   },
 
   // ─── Stock Trade — REAL via xStocks on Jupiter ───
@@ -790,33 +897,59 @@ const EXECUTORS = {
   },
 
   stock_quote: async (input) => {
-    const cgId = resolveCoingeckoId(input.symbol);
+    const symbol = (input.symbol || "").trim();
+    if (!symbol || symbol.length < 2) {
+      return { error: `Need a stock ticker (e.g. AAPL, TSLA, NVDA).` };
+    }
+    const upper = symbol.toUpperCase();
+
+    // 1) Try Jupiter price v3 with dynamic mint resolution (covers all xStocks)
     try {
-      const res = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${cgId}&vs_currencies=usd&include_24hr_change=true`);
-      const data = await res.json();
-      const key = Object.keys(data)[0];
-      if (key && data[key].usd) {
-        return { symbol: input.symbol, price: "$" + data[key].usd.toLocaleString(), change_24h: (data[key].usd_24h_change || 0).toFixed(2) + "%", source: "live" };
+      const token = await findTokenBySymbol(upper);
+      if (token?.mint) {
+        const res = await fetch(`https://lite-api.jup.ag/price/v3?ids=${token.mint}`);
+        if (res.ok) {
+          const data = await res.json();
+          const entry = data[token.mint];
+          if (entry?.usdPrice) {
+            return {
+              symbol: token.symbol || upper,
+              name: token.name || null,
+              price: "$" + parseFloat(entry.usdPrice).toLocaleString(undefined, { maximumFractionDigits: 4 }),
+              change_24h: entry.priceChange24h != null ? entry.priceChange24h.toFixed(2) + "%" : null,
+              mcap: entry.mcap ? "$" + Math.round(entry.mcap).toLocaleString() : null,
+              mint: token.mint,
+              tradeable: true,
+              source: "jupiter",
+              actions: [
+                { label: `Buy ${token.symbol || upper}`, prompt: `buy $10 of ${token.symbol || upper}` },
+                { label: "Set alert", prompt: `alert me when ${token.symbol || upper} drops 5%` }
+              ]
+            };
+          }
+        }
       }
     } catch (e) {}
+
+    // 2) Fallback: CoinGecko (for crypto tickers like BTC/ETH)
     try {
-      const upper = input.symbol?.toUpperCase() || "";
-      const mint = MINTS[upper] || XSTOCKS[upper] || resolveMint(upper);
-      const res = await fetch(`https://lite-api.jup.ag/price/v3?ids=${mint}`);
+      const cgId = resolveCoingeckoId(upper);
+      const res = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${cgId}&vs_currencies=usd&include_24hr_change=true`);
       if (res.ok) {
         const data = await res.json();
-        const entry = data[mint];
-        if (entry?.usdPrice) {
+        const key = Object.keys(data)[0];
+        if (key && data[key]?.usd) {
           return {
-            symbol: input.symbol,
-            price: "$" + parseFloat(entry.usdPrice).toLocaleString(),
-            change_24h: entry.priceChange24h ? entry.priceChange24h.toFixed(2) + "%" : null,
-            source: "live"
+            symbol: upper,
+            price: "$" + data[key].usd.toLocaleString(),
+            change_24h: (data[key].usd_24h_change || 0).toFixed(2) + "%",
+            source: "coingecko"
           };
         }
       }
     } catch (e) {}
-    return { error: `Couldn't find price for "${input.symbol}".` };
+
+    return { error: `Couldn't find a price for "${symbol}". If it's a stock, try the full ticker (e.g. AAPL).` };
   },
 
   // ─── Prediction Markets via Jupiter Prediction API (Solana-native) ───
@@ -1364,7 +1497,29 @@ const EXECUTORS = {
   }),
 
   request_payment: async (input) => ({ status: "ready", amount: input.amount, message: `Payment request for $${input.amount} created.`, link: `https://sano.finance/pay?amount=${input.amount}` }),
-  price_alert: async (input) => ({ status: "set", message: `Alert set: ${input.asset} ${input.direction} $${input.target_price}.` }),
+  price_alert: async (input, walletAddress, keypair, context) => {
+    if (!context?.userEmail) return { error: "No account context." };
+    const symbol = (input.asset || input.symbol || "").toUpperCase();
+    const target_price = parseFloat(input.target_price || 0);
+    const direction = (input.direction || "above").toLowerCase();
+    if (!symbol || !target_price) return { error: "Need asset and target_price." };
+    const token = await findTokenBySymbol(symbol);
+    if (!token) return { error: `Couldn't find ${symbol}.` };
+    const order = orders.addOrder({
+      email: context.userEmail,
+      walletAddress,
+      kind: "alert",
+      symbol: token.symbol || symbol,
+      mint: token.mint,
+      trigger: { direction, price: target_price }
+    });
+    return {
+      status: "set",
+      order_id: order.id,
+      message: `Alert set: ${symbol} ${direction} $${target_price}.`,
+      actions: [{ label: "View alerts", prompt: "list my orders" }, { label: "Cancel", prompt: `cancel order ${order.id}` }]
+    };
+  },
 };
 
 module.exports = { executeTool };
