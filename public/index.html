@@ -119,15 +119,100 @@
 
       <div class="chat-messages" id="messages">
         <div class="welcome" id="welcome">
-          <h2>What can I help you with?</h2>
-          <p>Shop, trade stocks, swap currencies, send money. Just ask.</p>
-          <div class="suggestions">
-            <button class="suggestion" data-prompt="Find me wireless earbuds under $50">Find wireless earbuds</button>
-            <button class="suggestion" data-prompt="Buy $100 of Apple stock">Buy $100 of Apple stock</button>
-            <button class="suggestion" data-prompt="Find me a Sony PlayStation 5">Find a PS5</button>
-            <button class="suggestion" data-prompt="Send $25 to a friend">Send money</button>
-            <button class="suggestion" data-prompt="What's Bitcoin worth right now?">Check Bitcoin price</button>
-            <button class="suggestion" data-prompt="Find me Nike Air Force 1 size 10">Find Nike sneakers</button>
+          <div class="welcome-orb">
+            <div class="orb-core"></div>
+            <div class="orb-ring ring-1"></div>
+            <div class="orb-ring ring-2"></div>
+            <div class="orb-ring ring-3"></div>
+          </div>
+          <h2 class="welcome-title">What can I help you with?</h2>
+          <p class="welcome-sub">I can shop, trade, swap, and pay — from your account.</p>
+
+          <div class="feature-grid">
+            <button class="feature-card" data-prompt="Find me wireless earbuds under $50">
+              <div class="feature-icon">🎧</div>
+              <div class="feature-name">Shop products</div>
+              <div class="feature-desc">Amazon, Walmart, more</div>
+            </button>
+            <button class="feature-card" data-prompt="Buy $100 of Apple stock">
+              <div class="feature-icon">📈</div>
+              <div class="feature-name">Buy stocks</div>
+              <div class="feature-desc">Tokenized equities</div>
+            </button>
+            <button class="feature-card" data-prompt="Get me $10 of Robux">
+              <div class="feature-icon">🎮</div>
+              <div class="feature-name">Gaming credits</div>
+              <div class="feature-desc">Steam, Roblox, Xbox</div>
+            </button>
+            <button class="feature-card" data-prompt="Subscribe me to Netflix">
+              <div class="feature-icon">📺</div>
+              <div class="feature-name">Subscriptions</div>
+              <div class="feature-desc">Netflix, Spotify, Apple</div>
+            </button>
+            <button class="feature-card" data-prompt="Top up my GCash by $10">
+              <div class="feature-icon">💸</div>
+              <div class="feature-name">Top up wallets</div>
+              <div class="feature-desc">GCash, GoPay, OVO</div>
+            </button>
+            <button class="feature-card" data-prompt="Swap $50 USDC to SOL">
+              <div class="feature-icon">🔄</div>
+              <div class="feature-name">Swap crypto</div>
+              <div class="feature-desc">Jupiter aggregator</div>
+            </button>
+            <button class="feature-card locked" data-prompt="Book a flight">
+              <div class="feature-badge">Beta</div>
+              <div class="feature-lock">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+              </div>
+              <div class="feature-icon">✈️</div>
+              <div class="feature-name">Book flights</div>
+              <div class="feature-desc">Coming soon</div>
+            </button>
+            <button class="feature-card locked" data-prompt="Book a hotel">
+              <div class="feature-badge">Beta</div>
+              <div class="feature-lock">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+              </div>
+              <div class="feature-icon">🏨</div>
+              <div class="feature-name">Book hotels</div>
+              <div class="feature-desc">Coming soon</div>
+            </button>
+            <button class="feature-card locked" data-prompt="Buy concert tickets">
+              <div class="feature-badge">Beta</div>
+              <div class="feature-lock">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+              </div>
+              <div class="feature-icon">🎫</div>
+              <div class="feature-name">Event tickets</div>
+              <div class="feature-desc">Coming soon</div>
+            </button>
+            <button class="feature-card locked" data-prompt="Bet on Polymarket">
+              <div class="feature-badge">Beta</div>
+              <div class="feature-lock">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+              </div>
+              <div class="feature-icon">🎯</div>
+              <div class="feature-name">Prediction markets</div>
+              <div class="feature-desc">Coming soon</div>
+            </button>
+            <button class="feature-card locked" data-prompt="Book a restaurant">
+              <div class="feature-badge">Beta</div>
+              <div class="feature-lock">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+              </div>
+              <div class="feature-icon">🍽️</div>
+              <div class="feature-name">Restaurants</div>
+              <div class="feature-desc">Coming soon</div>
+            </button>
+            <button class="feature-card locked" data-prompt="Rent a car">
+              <div class="feature-badge">Beta</div>
+              <div class="feature-lock">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+              </div>
+              <div class="feature-icon">🚗</div>
+              <div class="feature-name">Car rentals</div>
+              <div class="feature-desc">Coming soon</div>
+            </button>
           </div>
         </div>
       </div>
@@ -257,12 +342,52 @@
           </select>
         </div>
 
-        <div class="form-field">
-          <label>Shipping address</label>
-          <textarea id="setting-address" rows="4" placeholder="Full name&#10;Street address&#10;City, State, ZIP&#10;Country"></textarea>
+        <div style="margin-top:6px;margin-bottom:8px;font-size:13px;font-weight:600;color:var(--text-2);border-top:1px solid var(--border);padding-top:14px">Shipping address</div>
+
+        <div class="form-row">
+          <div class="form-field">
+            <label>Full name</label>
+            <input type="text" id="addr-name" placeholder="John Doe">
+          </div>
+          <div class="form-field">
+            <label>Phone</label>
+            <input type="tel" id="addr-phone" placeholder="+1 555 1234">
+          </div>
         </div>
 
-        <button id="settings-save" class="btn-primary">Save</button>
+        <div class="form-field">
+          <label>Address line 1</label>
+          <input type="text" id="addr-line1" placeholder="123 Main Street">
+        </div>
+
+        <div class="form-field">
+          <label>Address line 2 (optional)</label>
+          <input type="text" id="addr-line2" placeholder="Apt 4B">
+        </div>
+
+        <div class="form-row">
+          <div class="form-field">
+            <label>City</label>
+            <input type="text" id="addr-city" placeholder="San Francisco">
+          </div>
+          <div class="form-field">
+            <label>State / Province</label>
+            <input type="text" id="addr-state" placeholder="CA">
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-field">
+            <label>Postal code</label>
+            <input type="text" id="addr-postal" placeholder="94102">
+          </div>
+          <div class="form-field">
+            <label>Country</label>
+            <input type="text" id="addr-country" placeholder="United States">
+          </div>
+        </div>
+
+        <button id="settings-save" class="btn-primary" style="margin-top:6px">Save</button>
       </div>
     </div>
   </div>

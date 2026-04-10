@@ -469,26 +469,113 @@ sendBtn.addEventListener("click", () => {
   if (input.value.trim() && !streaming) send(input.value.trim());
 });
 
-// Suggestions
+// Suggestions + feature cards
 document.addEventListener("click", e => {
   const s = e.target.closest(".suggestion");
   if (s) send(s.dataset.prompt);
+
+  const card = e.target.closest(".feature-card");
+  if (card) {
+    if (card.classList.contains("locked")) {
+      // Subtle shake animation, no send
+      card.classList.remove("shake");
+      void card.offsetWidth; // restart animation
+      card.classList.add("shake");
+      return;
+    }
+    if (card.dataset.prompt) send(card.dataset.prompt);
+  }
 });
 
+const WELCOME_HTML = `
+<div class="welcome" id="welcome">
+  <div class="welcome-orb">
+    <div class="orb-core"></div>
+    <div class="orb-ring ring-1"></div>
+    <div class="orb-ring ring-2"></div>
+    <div class="orb-ring ring-3"></div>
+  </div>
+  <h2 class="welcome-title">What can I help you with?</h2>
+  <p class="welcome-sub">I can shop, trade, swap, and pay — from your account.</p>
+
+  <div class="feature-grid">
+    <button class="feature-card" data-prompt="Find me wireless earbuds under $50">
+      <div class="feature-icon">\u{1F3A7}</div>
+      <div class="feature-name">Shop products</div>
+      <div class="feature-desc">Amazon, Walmart, more</div>
+    </button>
+    <button class="feature-card" data-prompt="Buy $100 of Apple stock">
+      <div class="feature-icon">\u{1F4C8}</div>
+      <div class="feature-name">Buy stocks</div>
+      <div class="feature-desc">Tokenized equities</div>
+    </button>
+    <button class="feature-card" data-prompt="Get me $10 of Robux">
+      <div class="feature-icon">\u{1F3AE}</div>
+      <div class="feature-name">Gaming credits</div>
+      <div class="feature-desc">Steam, Roblox, Xbox</div>
+    </button>
+    <button class="feature-card" data-prompt="Subscribe me to Netflix">
+      <div class="feature-icon">\u{1F4FA}</div>
+      <div class="feature-name">Subscriptions</div>
+      <div class="feature-desc">Netflix, Spotify, Apple</div>
+    </button>
+    <button class="feature-card" data-prompt="Top up my GCash by $10">
+      <div class="feature-icon">\u{1F4B8}</div>
+      <div class="feature-name">Top up wallets</div>
+      <div class="feature-desc">GCash, GoPay, OVO</div>
+    </button>
+    <button class="feature-card" data-prompt="Swap $50 USDC to SOL">
+      <div class="feature-icon">\u{1F504}</div>
+      <div class="feature-name">Swap crypto</div>
+      <div class="feature-desc">Jupiter aggregator</div>
+    </button>
+    <button class="feature-card locked">
+      <div class="feature-badge">Beta</div>
+      <div class="feature-lock"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div>
+      <div class="feature-icon">\u2708\uFE0F</div>
+      <div class="feature-name">Book flights</div>
+      <div class="feature-desc">Coming soon</div>
+    </button>
+    <button class="feature-card locked">
+      <div class="feature-badge">Beta</div>
+      <div class="feature-lock"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div>
+      <div class="feature-icon">\u{1F3E8}</div>
+      <div class="feature-name">Book hotels</div>
+      <div class="feature-desc">Coming soon</div>
+    </button>
+    <button class="feature-card locked">
+      <div class="feature-badge">Beta</div>
+      <div class="feature-lock"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div>
+      <div class="feature-icon">\u{1F3AB}</div>
+      <div class="feature-name">Event tickets</div>
+      <div class="feature-desc">Coming soon</div>
+    </button>
+    <button class="feature-card locked">
+      <div class="feature-badge">Beta</div>
+      <div class="feature-lock"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div>
+      <div class="feature-icon">\u{1F3AF}</div>
+      <div class="feature-name">Prediction markets</div>
+      <div class="feature-desc">Coming soon</div>
+    </button>
+    <button class="feature-card locked">
+      <div class="feature-badge">Beta</div>
+      <div class="feature-lock"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height "11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div>
+      <div class="feature-icon">\u{1F37D}\uFE0F</div>
+      <div class="feature-name">Restaurants</div>
+      <div class="feature-desc">Coming soon</div>
+    </button>
+    <button class="feature-card locked">
+      <div class="feature-badge">Beta</div>
+      <div class="feature-lock"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div>
+      <div class="feature-icon">\u{1F697}</div>
+      <div class="feature-name">Car rentals</div>
+      <div class="feature-desc">Coming soon</div>
+    </button>
+  </div>
+</div>`;
+
 function addWelcome() {
-  messages.innerHTML = `
-    <div class="welcome" id="welcome">
-      <h2>What can I help you with?</h2>
-      <p>Shop, trade stocks, swap currencies, send money. Just ask.</p>
-      <div class="suggestions">
-        <button class="suggestion" data-prompt="Find me wireless earbuds under $50">Find wireless earbuds</button>
-        <button class="suggestion" data-prompt="Buy $100 of Apple stock">Buy $100 of Apple stock</button>
-        <button class="suggestion" data-prompt="Find me a Sony PlayStation 5">Find a PS5</button>
-        <button class="suggestion" data-prompt="Send $25 to a friend">Send money</button>
-        <button class="suggestion" data-prompt="What's Bitcoin worth right now?">Check Bitcoin price</button>
-        <button class="suggestion" data-prompt="Find me Nike Air Force 1 size 10">Find Nike sneakers</button>
-      </div>
-    </div>`;
+  messages.innerHTML = WELCOME_HTML;
 }
 
 function addMsg(role, content) {
@@ -905,7 +992,16 @@ $("#settings-btn").addEventListener("click", async () => {
   }
   $("#setting-language").value = userSettings.language || "en";
   $("#setting-country").value = userSettings.country || "US";
-  $("#setting-address").value = userSettings.shipping_address || "";
+  // Address fields
+  const a = userSettings.address || {};
+  $("#addr-name").value = a.name || "";
+  $("#addr-phone").value = a.phone || "";
+  $("#addr-line1").value = a.line1 || "";
+  $("#addr-line2").value = a.line2 || "";
+  $("#addr-city").value = a.city || "";
+  $("#addr-state").value = a.state || "";
+  $("#addr-postal").value = a.postal || "";
+  $("#addr-country").value = a.country || "";
   applyTheme(userSettings.theme || "light");
 });
 $("#settings-modal-close").addEventListener("click", () => $("#settings-modal").classList.add("hidden"));
@@ -923,7 +1019,16 @@ $$(".theme-option").forEach(btn => {
 $("#settings-save").addEventListener("click", async () => {
   userSettings.language = $("#setting-language").value;
   userSettings.country = $("#setting-country").value;
-  userSettings.shipping_address = $("#setting-address").value;
+  userSettings.address = {
+    name: $("#addr-name").value.trim(),
+    phone: $("#addr-phone").value.trim(),
+    line1: $("#addr-line1").value.trim(),
+    line2: $("#addr-line2").value.trim(),
+    city: $("#addr-city").value.trim(),
+    state: $("#addr-state").value.trim(),
+    postal: $("#addr-postal").value.trim(),
+    country: $("#addr-country").value.trim()
+  };
   await saveUserSettings();
   $("#settings-modal").classList.add("hidden");
 });

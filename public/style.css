@@ -339,6 +339,12 @@ html.dark {
 }
 .form-field textarea { resize: vertical; }
 
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
 /* ─── Theme Switcher ─── */
 .theme-switcher {
   display: flex;
@@ -492,20 +498,178 @@ html.dark {
 }
 
 .welcome {
-  max-width: 560px; margin: 80px auto 0; text-align: center;
+  max-width: 760px; margin: 40px auto 0; text-align: center;
+  padding: 0 20px;
 }
 
-.welcome h2 {
-  font-size: 24px; font-weight: 600; margin-bottom: 8px; letter-spacing: -0.3px;
+.welcome-title {
+  font-size: 28px; font-weight: 700; margin-bottom: 8px; letter-spacing: -0.5px;
+  background: linear-gradient(135deg, var(--text) 0%, var(--accent) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
 }
 
-.welcome p {
-  color: var(--text-3); font-size: 14px; line-height: 1.6; margin-bottom: 32px;
+.welcome-sub {
+  color: var(--text-3); font-size: 15px; line-height: 1.6; margin-bottom: 36px;
+}
+
+/* ─── Animated welcome orb ─── */
+.welcome-orb {
+  position: relative;
+  width: 100px;
+  height: 100px;
+  margin: 20px auto 28px;
+}
+
+.orb-core {
+  position: absolute;
+  inset: 30px;
+  background: radial-gradient(circle at 30% 30%, var(--accent), var(--accent-hover));
+  border-radius: 50%;
+  box-shadow: 0 0 40px var(--accent-soft), 0 0 80px var(--accent-soft);
+  animation: orb-pulse 3s ease-in-out infinite;
+}
+
+.orb-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 1.5px solid var(--accent);
+  opacity: 0;
+}
+
+.orb-ring.ring-1 { animation: orb-ring-pulse 3s ease-out infinite; }
+.orb-ring.ring-2 { animation: orb-ring-pulse 3s ease-out infinite 1s; }
+.orb-ring.ring-3 { animation: orb-ring-pulse 3s ease-out infinite 2s; }
+
+@keyframes orb-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.08); }
+}
+@keyframes orb-ring-pulse {
+  0% { transform: scale(0.6); opacity: 0.7; }
+  100% { transform: scale(1.4); opacity: 0; }
 }
 
 .suggestions {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px;
   text-align: left;
+}
+
+/* ─── Feature grid (welcome screen) ─── */
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 12px;
+  text-align: left;
+  margin-top: 8px;
+}
+
+.feature-card {
+  position: relative;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 16px 14px 14px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-family: var(--font);
+  text-align: left;
+  overflow: hidden;
+}
+
+.feature-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, var(--accent-soft), transparent 70%);
+  opacity: 0;
+  transition: opacity 0.2s;
+  pointer-events: none;
+}
+
+.feature-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--accent);
+  box-shadow: 0 8px 24px rgba(37, 99, 235, 0.12);
+}
+.feature-card:hover::before {
+  opacity: 1;
+}
+
+.feature-icon {
+  font-size: 22px;
+  margin-bottom: 8px;
+  position: relative;
+  z-index: 1;
+}
+
+.feature-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 2px;
+  position: relative;
+  z-index: 1;
+}
+
+.feature-desc {
+  font-size: 11px;
+  color: var(--text-3);
+  position: relative;
+  z-index: 1;
+}
+
+.feature-card.locked {
+  opacity: 0.7;
+  cursor: not-allowed;
+  background: var(--bg-3);
+}
+.feature-card.locked:hover {
+  transform: none;
+  box-shadow: none;
+  border-color: var(--border);
+}
+.feature-card.locked .feature-icon {
+  filter: grayscale(0.5);
+  opacity: 0.7;
+}
+
+.feature-badge {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  z-index: 2;
+}
+
+.feature-lock {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  color: var(--text-4);
+  z-index: 2;
+}
+
+.feature-card.locked .feature-icon {
+  margin-top: 8px;
+}
+
+.feature-card.shake {
+  animation: shake 0.4s ease-in-out;
+}
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  20%, 60% { transform: translateX(-4px); }
+  40%, 80% { transform: translateX(4px); }
 }
 
 .suggestion {
