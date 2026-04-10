@@ -243,7 +243,7 @@ const EXECUTORS = {
       });
 
       // 4. Confirm
-      const confirmation = await connection.confirmTransaction(signature, "confirmed");
+      const confirmation = await connection.confirmTransaction(signature, "processed");
 
       if (confirmation.value?.err) {
         return {
@@ -333,7 +333,7 @@ const EXECUTORS = {
         tx.sign(keypair);
 
         const signature = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: false });
-        await connection.confirmTransaction(signature, "confirmed");
+        await connection.confirmTransaction(signature, "processed");
 
         console.log(`  [SEND] ${input.amount} SOL to ${recipient.slice(0,8)}... | tx: ${signature}`);
 
@@ -381,7 +381,7 @@ const EXECUTORS = {
         tx.sign(keypair);
 
         const signature = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: false });
-        await connection.confirmTransaction(signature, "confirmed");
+        await connection.confirmTransaction(signature, "processed");
 
         console.log(`  [SEND] ${input.amount} ${token} to ${recipient.slice(0,8)}... | tx: ${signature}`);
 
@@ -713,8 +713,9 @@ const EXECUTORS = {
       const tx = VersionedTransaction.deserialize(txBuf);
       tx.sign([keypair]);
 
-      const signature = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: false, maxRetries: 3 });
-      const confirmation = await connection.confirmTransaction(signature, "confirmed");
+      const signature = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
+      // Use 'processed' instead of 'confirmed' for faster UX (~2s vs 10s)
+      const confirmation = await connection.confirmTransaction(signature, "processed");
 
       if (confirmation.value?.err) {
         return {
@@ -727,20 +728,28 @@ const EXECUTORS = {
       const outputDecimals = input.side === "buy" ? 8 : 6;
       const received = parseInt(quote.outAmount) / (10 ** outputDecimals);
 
+      // For SELL receipts, the actual USD value is what we got back, NOT
+      // what the user originally typed. For BUY, the input amount is the USD.
+      const actualUsdValue = input.side === "sell" ? received : amount;
+      // Calculate actual shares involved in this trade
+      const inputDecimals = input.side === "buy" ? 6 : 8;
+      const sharesTraded = input.side === "buy" ? received : (swapAmount / (10 ** inputDecimals));
+
       console.log(`  [STOCK] ${input.side.toUpperCase()} ${symbol} | tx: ${signature}`);
 
       return {
         ui_type: "trade_receipt",
         status: "completed",
         side: input.side, symbol,
-        amount_usd: amount,
+        amount_usd: parseFloat(actualUsdValue.toFixed(2)),
+        shares: parseFloat(sharesTraded.toFixed(6)),
         shares_received: input.side === "buy" ? received : null,
         usd_received: input.side === "sell" ? received : null,
         signature,
         explorer: `https://solscan.io/tx/${signature}`,
         message: input.side === "buy"
-          ? `Bought ~${received.toFixed(4)} shares of ${symbol} for $${amount.toFixed(2)}.`
-          : `Sold ${symbol}, received ~$${received.toFixed(2)}.`
+          ? `Bought ${received.toFixed(6)} shares of ${symbol} for $${amount.toFixed(2)}.`
+          : `Sold ${sharesTraded.toFixed(6)} shares of ${symbol} for $${received.toFixed(2)}.`
       };
     } catch (e) {
       if (e.message?.includes("insufficient") || e.message?.includes("0x1")) {
@@ -904,7 +913,7 @@ const EXECUTORS = {
       tx.sign([keypair]);
 
       const signature = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: false, maxRetries: 3 });
-      await connection.confirmTransaction(signature, "confirmed");
+      await connection.confirmTransaction(signature, "processed");
 
       console.log(`  [BET] $${input.amount_usdc} on ${isYes ? "YES" : "NO"} ${input.market_id} | tx: ${signature}`);
 
@@ -1041,7 +1050,7 @@ const EXECUTORS = {
       tx.sign(keypair);
 
       const signature = await connection.sendRawTransaction(tx.serialize());
-      await connection.confirmTransaction(signature, "confirmed");
+      await connection.confirmTransaction(signature, "processed");
 
       // 5. Poll Bitrefill for the redemption code
       let redemptionCode = null;
