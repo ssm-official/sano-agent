@@ -892,7 +892,10 @@ const EXECUTORS = {
 
       // 2. Build the order request — Jupiter returns a base64 Solana tx
       const usdcMint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-      const depositAmount = String(Math.round(input.amount_usdc * 1_000_000));
+      // Enforce minimum $1 order
+      const betAmount = Math.max(input.amount_usdc || 0, 1);
+      const depositAmount = String(Math.round(betAmount * 1_000_000));
+      console.log(`  [BET] Placing: $${betAmount} (${depositAmount} native) on ${isYes ? "YES" : "NO"} for ${input.market_id}`);
 
       const orderRes = await fetch("https://api.jup.ag/prediction/v1/orders", {
         method: "POST",
@@ -933,11 +936,15 @@ const EXECUTORS = {
         };
       }
 
-      if (orderData.error) return { error: typeof orderData.error === "string" ? orderData.error : JSON.stringify(orderData.error) };
+      if (orderData.error || orderData.code) {
+        const msg = orderData.message || (typeof orderData.error === "string" ? orderData.error : JSON.stringify(orderData));
+        console.log(`  [BET] Order rejected: ${msg} (deposit: ${depositAmount})`);
+        return { error: msg };
+      }
       const txB64 = orderData.transaction || orderData.tx || orderData.serializedTransaction;
       if (!txB64) {
-        console.log("  [BET] No transaction in response:", JSON.stringify(orderData).slice(0, 300));
-        return { error: orderData.message || "Couldn't build the bet order. Try a different amount or market." };
+        console.log("  [BET] No transaction in response:", JSON.stringify(orderData).slice(0, 500));
+        return { error: orderData.message || "Couldn't build the bet order. Try $1 or more." };
       }
 
       // 3. Sign and submit
