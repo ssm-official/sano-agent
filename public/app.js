@@ -260,23 +260,26 @@ async function loadPortfolio() {
     return;
   }
   try {
-    // Fetch wallet balance + prediction positions in parallel
-    const [walletRes, predRes] = await Promise.all([
+    // Fetch wallet balance + prediction positions in parallel (each can fail independently)
+    let walletData = { sol_balance: 0, sol_value_usd: 0, cash_holdings: [], stock_holdings: [], total_usd: 0 };
+    let predPositions = [];
+
+    const [walletRes, predRes] = await Promise.allSettled([
       fetch("/api/wallet/balance", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ address: walletAddress })
-      }),
-      fetch(`/api/predictions/positions?owner=${walletAddress}`)
+      }).then(r => r.json()),
+      fetch(`/api/predictions/positions?owner=${walletAddress}`).then(r => r.json())
     ]);
-    const walletData = await walletRes.json();
-    const predData = await predRes.json();
-    portfolioData = {
-      ...walletData,
-      prediction_positions: predData.positions || []
-    };
+
+    if (walletRes.status === "fulfilled" && !walletRes.value.error) walletData = walletRes.value;
+    if (predRes.status === "fulfilled") predPositions = predRes.value.positions || [];
+
+    portfolioData = { ...walletData, prediction_positions: predPositions };
     renderPortfolio();
   } catch (e) {
+    console.error("Portfolio error:", e);
     $("#portfolio-positions").innerHTML = `<div class="portfolio-empty">Couldn't load portfolio</div>`;
   }
 }

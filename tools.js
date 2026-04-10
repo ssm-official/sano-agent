@@ -155,15 +155,17 @@ const TOOLS = [
   },
   {
     name: "prediction_bet",
-    description: "Place a real bet on a prediction market via Jupiter Predict. Buys YES or NO contracts with the user's USDC. Settles on Solana, no bridging needed. ALWAYS confirm the amount and outcome with the user before calling this tool.",
+    description: "Place a real bet on a prediction market via Jupiter Predict. You can pass EITHER a market_id from search results, OR a natural language query + sub_market to let the tool find the right market automatically. ALWAYS confirm the amount and outcome with the user before calling this tool.",
     input_schema: {
       type: "object",
       properties: {
-        market_id: { type: "string", description: "The marketId from prediction_search results (e.g. 'POLY-566142')" },
-        outcome: { type: "string", description: "Which side to bet on: 'yes' or 'no'", enum: ["yes", "no"] },
-        amount_usdc: { type: "number", description: "How much USDC to bet" }
+        market_id: { type: "string", description: "Optional: exact marketId from prediction_search (e.g. 'POLY-568630')" },
+        query: { type: "string", description: "Optional: natural language search if you don't have a market_id (e.g. 'masters', 'champions league')" },
+        sub_market: { type: "string", description: "Optional: which sub-market to bet on (e.g. 'Rory McIlroy', 'Bayern Munich')" },
+        outcome: { type: "string", description: "Which side: 'yes' or 'no'", enum: ["yes", "no"] },
+        amount_usdc: { type: "number", description: "How much USDC to bet (minimum $1.50)" }
       },
-      required: ["market_id", "outcome", "amount_usdc"]
+      required: ["outcome", "amount_usdc"]
     }
   },
 

@@ -879,11 +879,58 @@ const EXECUTORS = {
     if (solCheck) return solCheck;
 
     try {
+      let marketId = input.market_id;
+
+      // If no market_id but we have a query, find the right market automatically
+      if (!marketId && input.query) {
+        const searchRes = await fetch(`https://api.jup.ag/prediction/v1/events/search?query=${encodeURIComponent(input.query)}&limit=5`);
+        const searchData = await searchRes.json();
+        const eventIds = (searchData.data || []).map(e => e.eventId).filter(Boolean);
+
+        // Fetch events with markets
+        const events = (await Promise.all(
+          eventIds.slice(0, 5).map(id =>
+            fetch(`https://api.jup.ag/prediction/v1/events/${id}`)
+              .then(r => r.ok ? r.json() : null).catch(() => null)
+          )
+        )).filter(Boolean);
+
+        // Find the right sub-market by matching sub_market name
+        const subQuery = (input.sub_market || "").toLowerCase();
+        for (const ev of events) {
+          const openMarkets = (ev.markets || []).filter(m => m.status === "open");
+          if (subQuery) {
+            const match = openMarkets.find(m =>
+              m.title?.toLowerCase().includes(subQuery)
+            );
+            if (match) {
+              marketId = match.marketId;
+              console.log(`  [BET] Auto-resolved: "${input.query}" + "${input.sub_market}" -> ${marketId} (${match.title})`);
+              break;
+            }
+          } else if (openMarkets.length === 1) {
+            // Single market event (e.g., "Will X happen?")
+            marketId = openMarkets[0].marketId;
+            break;
+          }
+        }
+
+        if (!marketId) {
+          return {
+            error: `Couldn't find a market matching "${input.query}"${subQuery ? ` + "${input.sub_market}"` : ""}. Try prediction_search first to see available markets.`
+          };
+        }
+      }
+
+      if (!marketId) {
+        return { error: "Need either a market_id or a query + sub_market to place a bet." };
+      }
+
       // 1. Get market details to validate and get pricing
-      const marketRes = await fetch(`https://api.jup.ag/prediction/v1/markets/${input.market_id}`);
+      const marketRes = await fetch(`https://api.jup.ag/prediction/v1/markets/${marketId}`);
       const market = await marketRes.json();
       if (market.error || !market.marketId) {
-        return { error: `Market ${input.market_id} not found.` };
+        return { error: `Market ${marketId} not found.` };
       }
       if (market.status && market.status !== "open") {
         return { error: `Market is ${market.status}, can't bet right now.` };
@@ -898,14 +945,14 @@ const EXECUTORS = {
       // Jupiter requires >$1 minimum — use $1.50 floor to account for fees/rounding
       const betAmount = Math.max(input.amount_usdc || 0, 1.5);
       const depositAmount = String(Math.round(betAmount * 1_000_000));
-      console.log(`  [BET] Placing: $${betAmount} (${depositAmount} native) on ${isYes ? "YES" : "NO"} for ${input.market_id}`);
+      console.log(`  [BET] Placing: $${betAmount} (${depositAmount} native) on ${isYes ? "YES" : "NO"} for ${marketId}`);
 
       const orderRes = await fetch("https://api.jup.ag/prediction/v1/orders", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ownerPubkey: walletAddress,
-          marketId: input.market_id,
+          marketId: marketId,
           isYes,
           isBuy: true,
           depositAmount,
@@ -920,7 +967,7 @@ const EXECUTORS = {
         // Try to find the Polymarket slug for a deep link
         let polyUrl = "https://polymarket.com";
         try {
-          const marketInfoRes = await fetch(`https://api.jup.ag/prediction/v1/markets/${input.market_id}`);
+          const marketInfoRes = await fetch(`https://api.jup.ag/prediction/v1/markets/${marketId}`);
           const marketInfo = await marketInfoRes.json();
           // Search for the parent event
           if (marketInfo.eventId) {
@@ -958,7 +1005,7 @@ const EXECUTORS = {
       const signature = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: false, maxRetries: 3 });
       await connection.confirmTransaction(signature, "processed");
 
-      console.log(`  [BET] $${betAmount} on ${isYes ? "YES" : "NO"} ${input.market_id} | tx: ${signature}`);
+      console.log(`  [BET] $${betAmount} on ${isYes ? "YES" : "NO"} ${marketId} | tx: ${signature}`);
 
       // 4. Format the receipt with potential payout
       const myPriceRaw = isYes ? market.pricing?.buyYesPriceUsd : market.pricing?.buyNoPriceUsd;
