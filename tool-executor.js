@@ -612,14 +612,77 @@ const EXECUTORS = {
     }
 
     // Route through Jupiter swap
-    const inputToken = input.side === "buy" ? "USDC" : symbol;
-    const outputToken = input.side === "buy" ? symbol : "USDC";
-
-    // Override mint resolution to use the looked-up address
     const inputMint = input.side === "buy" ? MINTS.USDC : token.mint;
     const outputMint = input.side === "buy" ? token.mint : MINTS.USDC;
-    const inputDecimals = input.side === "buy" ? 6 : 8; // USDC=6, xStocks usually 8
-    const swapAmount = Math.round(amount * (10 ** inputDecimals));
+
+    let swapAmount;
+    if (input.side === "buy") {
+      // Buy: input is USDC (6 decimals), amount is the USD value
+      swapAmount = Math.round(amount * (10 ** 6));
+    } else {
+      // Sell: input is the stock token. We need to convert USD value to share amount.
+      // Read the user's actual balance + price, then calculate.
+      try {
+        // Get token decimals + user's balance from on-chain
+        const userPubkey = new PublicKey(walletAddress);
+        const stockMint = new PublicKey(token.mint);
+        // xStocks live in Token-2022
+        const TOKEN_2022 = new PublicKey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
+        const SPL_TOKEN = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+        const [t22Accounts, splAccounts] = await Promise.all([
+          connection.getParsedTokenAccountsByOwner(userPubkey, { mint: stockMint, programId: TOKEN_2022 }).catch(() => ({ value: [] })),
+          connection.getParsedTokenAccountsByOwner(userPubkey, { mint: stockMint, programId: SPL_TOKEN }).catch(() => ({ value: [] }))
+        ]);
+        const accounts = [...(t22Accounts.value || []), ...(splAccounts.value || [])];
+        if (accounts.length === 0) {
+          return { error: `You don't have any ${symbol} to sell.` };
+        }
+        const info = accounts[0].account.data.parsed?.info;
+        const decimals = info?.tokenAmount?.decimals || 8;
+        const userShares = parseFloat(info?.tokenAmount?.uiAmountString || "0");
+        if (userShares === 0) {
+          return { error: `You don't have any ${symbol} to sell.` };
+        }
+
+        // Get current price from lite-api/price/v3
+        let currentPrice = 0;
+        try {
+          const priceRes = await fetch(`https://lite-api.jup.ag/price/v3?ids=${token.mint}`);
+          if (priceRes.ok) {
+            const priceData = await priceRes.json();
+            currentPrice = parseFloat(priceData[token.mint]?.usdPrice || 0);
+          }
+        } catch (e) {}
+
+        // Calculate how many shares to sell
+        let sharesToSell;
+        if (currentPrice > 0 && amount > 0) {
+          const positionValueUsd = userShares * currentPrice;
+          if (amount >= positionValueUsd * 0.99) {
+            // Selling effectively all → use exact balance to avoid dust
+            sharesToSell = userShares;
+          } else {
+            sharesToSell = amount / currentPrice;
+          }
+        } else {
+          // No price available — sell whatever the user said (interpret as shares)
+          sharesToSell = Math.min(amount, userShares);
+        }
+
+        // Convert to raw amount, capped at what they actually have
+        const rawDesired = Math.floor(sharesToSell * (10 ** decimals));
+        const rawBalance = parseInt(info.tokenAmount.amount, 10);
+        swapAmount = Math.min(rawDesired, rawBalance);
+
+        if (swapAmount <= 0) {
+          return { error: `Calculated sell amount is too small.` };
+        }
+      } catch (e) {
+        console.log("[STOCK SELL] Balance check failed:", e.message);
+        // Fallback to old behavior
+        swapAmount = Math.round(amount * (10 ** 8));
+      }
+    }
 
     try {
       // Get quote
@@ -664,7 +727,7 @@ const EXECUTORS = {
       const outputDecimals = input.side === "buy" ? 8 : 6;
       const received = parseInt(quote.outAmount) / (10 ** outputDecimals);
 
-      console.log(`  [STOCK] ${input.side.toUpperCase()} ${symbol} for $${amount} | tx: ${signature}`);
+      console.log(`  [STOCK] ${input.side.toUpperCase()} ${symbol} | tx: ${signature}`);
 
       return {
         ui_type: "trade_receipt",
@@ -676,12 +739,12 @@ const EXECUTORS = {
         signature,
         explorer: `https://solscan.io/tx/${signature}`,
         message: input.side === "buy"
-          ? `Bought ~${received.toFixed(4)} shares of ${symbol} for $${amount}.`
-          : `Sold ${amount} shares of ${symbol}, received ~$${received.toFixed(2)}.`
+          ? `Bought ~${received.toFixed(4)} shares of ${symbol} for $${amount.toFixed(2)}.`
+          : `Sold ${symbol}, received ~$${received.toFixed(2)}.`
       };
     } catch (e) {
       if (e.message?.includes("insufficient") || e.message?.includes("0x1")) {
-        return { error: `Not enough USDC in your account. Add funds first.` };
+        return { error: `Not enough ${input.side === "buy" ? "USDC" : symbol} in your account.` };
       }
       console.error("  [STOCK] Error:", e.message);
       return { error: `Trade failed: ${e.message}` };
