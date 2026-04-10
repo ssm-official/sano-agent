@@ -507,6 +507,13 @@ input.addEventListener("keydown", e => {
   }
 });
 
+// Global ESC handler — cancel in-flight chat
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape" && streaming && chatAbortController) {
+    chatAbortController.abort();
+  }
+});
+
 sendBtn.addEventListener("click", () => {
   if (input.value.trim() && !streaming) send(input.value.trim());
 });
@@ -794,15 +801,22 @@ function renderTradeReceipt(r) {
   return div;
 }
 
+// Global abort controller so ESC can cancel an in-flight chat
+let chatAbortController = null;
+
 async function send(text) {
   streaming = true;
   sendBtn.disabled = true;
+  appEl.classList.add("streaming");
   input.value = "";
   input.style.height = "auto";
 
   addMsg("user", text);
   const textEl = addMsg("assistant", "");
   textEl.innerHTML = `<div class="typing"><span></span><span></span><span></span></div>`;
+
+  // Create new abort controller for this request
+  chatAbortController = new AbortController();
 
   try {
     const res = await fetch("/api/chat", {
@@ -811,7 +825,8 @@ async function send(text) {
         "Content-Type": "application/json",
         ...(authToken ? { "Authorization": `Bearer ${authToken}` } : {})
       },
-      body: JSON.stringify({ message: text, sessionId, walletAddress, userEmail })
+      body: JSON.stringify({ message: text, sessionId, walletAddress, userEmail }),
+      signal: chatAbortController.signal
     });
 
     const reader = res.body.getReader();
@@ -886,10 +901,16 @@ async function send(text) {
 
     if (!started) textEl.innerHTML = `<span style="color:var(--text-3)">No response. Try again or refresh.</span>`;
   } catch (err) {
-    textEl.innerHTML = `<span style="color:var(--red)">Connection error. Check that the server is running.</span>`;
+    if (err.name === "AbortError") {
+      textEl.innerHTML = `<span style="color:var(--text-3)">Cancelled.</span>`;
+    } else {
+      textEl.innerHTML = `<span style="color:var(--red)">Connection error. Check that the server is running.</span>`;
+    }
   }
 
+  chatAbortController = null;
   streaming = false;
+  appEl.classList.remove("streaming");
   sendBtn.disabled = !input.value.trim();
   scroll();
 }

@@ -1341,8 +1341,29 @@ html.dark .position-icon.prediction { background: rgba(109, 40, 217, 0.25); colo
 }
 .tool-detail.expanded { max-height: 300px; overflow-y: auto; }
 
+/* Cancel hint */
+.cancel-hint {
+  position: absolute;
+  bottom: -20px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 11px;
+  color: var(--text-4);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+.cancel-hint.visible { opacity: 1; }
+
 /* Typing */
-.typing { display: flex; gap: 4px; padding: 10px 14px; }
+.typing { display: flex; gap: 4px; padding: 10px 14px; align-items: center; }
+.typing::after {
+  content: "thinking...";
+  margin-left: 8px;
+  font-size: 12px;
+  color: var(--text-3);
+  font-style: italic;
+}
 .typing span {
   width: 5px; height: 5px; background: var(--text-4); border-radius: 50%;
   animation: bounce 1.4s ease-in-out infinite;
@@ -1386,7 +1407,20 @@ html.dark .position-icon.prediction { background: rgba(109, 40, 217, 0.25); colo
 .send-btn:hover:not(:disabled) { background: var(--accent-hover); }
 .send-btn:disabled { opacity: 0.25; cursor: not-allowed; }
 
-.input-hint { font-size: 11px; color: var(--text-4); padding: 6px 2px 0; }
+.input-hint { font-size: 11px; color: var(--text-4); padding: 6px 2px 0; min-height: 18px; }
+.input-hint .hint-streaming { display: none; }
+.app.streaming .input-hint .hint-default { display: none; }
+.app.streaming .input-hint .hint-streaming { display: inline; color: var(--accent); }
+.input-hint kbd {
+  display: inline-block;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-family: var(--mono);
+  font-size: 10px;
+  margin: 0 2px;
+}
 
 /* ─── Fund Modal ─── */
 .modal-overlay {

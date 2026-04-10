@@ -41,52 +41,81 @@ function resolveCoingeckoId(token) {
   return COINGECKO_IDS[token?.toUpperCase?.()] || token.toLowerCase();
 }
 
-// xStocks (tokenized stocks via Backed Finance / Jupiter) — verified mints
+// xStocks (tokenized stocks via Backed Finance / Jupiter) — known mints
+// Note: many more are available via dynamic Jupiter token search; these are
+// just the fast-path lookups for the most common tickers.
 const XSTOCKS = {
-  AAPL: "XsbEhLAtcf6HdfpFZ5xEMdqW8nfAvcsP5bdudRLJzJp",   // Apple
-  TSLA: "XsDoVfqeBukxuZHWhdvWHBhgEHjGNst4MLodqsJHzoB",   // Tesla
-  NVDA: "Xsc9qvGR1efVDFGLrVsmkzv3qi45LYa1gNPhKy5KzwR",   // Nvidia
-  MSFT: "XsoCS1TfEyfFhfvj8EtZ528L3CaKBDBRqRapnBbDF2W",   // Microsoft
-  GOOGL: "XsmZuhVx1KXWSxcZTRy5pcLwAEpRdWGEMVoqkSWCLxY",  // Google (Alphabet)
-  AMZN: "Xs3eBt7uVfZLm3jAJfPkYW2XwTbpcnGNVnE8WoLwGmm",   // Amazon
-  META: "Xsa62P5mvPszXL1krVUnU5ar38bBSVcWAB6fmPCo5Zu",   // Meta
-  COIN: "XsueG8BtpquVJX9LVLLEGuViXUungE6WmK5YZ3p3bd1",   // Coinbase
-  MSTR: "XsP7xzNPvEHS1m6qfanPUGjNmdnmsLKEoNAnHjdxxyZ",   // MicroStrategy
-  SPY: "XsoCS1TfEyfFhfvj8EtZ528L3CaKBDBRqRapnBbDF2W",    // S&P 500 ETF (placeholder)
-  QQQ: "Xs151QeqTCiuYTbq4PNXTqEEbcdTydqEHnHy5BmsWZK",    // Nasdaq ETF
-  GLD: "XsP7xzNPvEHS1m6qfanPUGjNmdnmsLKEoNAnHjdxxyZ",    // Gold ETF (placeholder)
+  AAPL: "XsbEhLAtcf6HdfpFZ5xEMdqW8nfAvcsP5bdudRLJzJp",
+  TSLA: "XsDoVfqeBukxuZHWhdvWHBhgEHjGNst4MLodqsJHzoB",
+  NVDA: "Xsc9qvGR1efVDFGLrVsmkzv3qi45LYa1gNPhKy5KzwR",
+  MSFT: "XsoCS1TfEyfFhfvj8EtZ528L3CaKBDBRqRapnBbDF2W",
+  GOOGL: "XsmZuhVx1KXWSxcZTRy5pcLwAEpRdWGEMVoqkSWCLxY",
+  GOOG: "XsmZuhVx1KXWSxcZTRy5pcLwAEpRdWGEMVoqkSWCLxY",
+  AMZN: "Xs3eBt7uVfZLm3jAJfPkYW2XwTbpcnGNVnE8WoLwGmm",
+  META: "Xsa62P5mvPszXL1krVUnU5ar38bBSVcWAB6fmPCo5Zu",
+  COIN: "XsueG8BtpquVJX9LVLLEGuViXUungE6WmK5YZ3p3bd1",
+  MSTR: "XsP7xzNPvEHS1m6qfanPUGjNmdnmsLKEoNAnHjdxxyZ",
+  QQQ: "Xs151QeqTCiuYTbq4PNXTqEEbcdTydqEHnHy5BmsWZK",
 };
 
-// Look up a token via Jupiter's token search API (covers thousands of tokens including new xStocks)
+// In-memory cache for dynamic stock lookups (5min TTL)
+const stockMintCache = new Map();
+function getCachedMint(symbol) {
+  const entry = stockMintCache.get(symbol.toUpperCase());
+  if (entry && Date.now() - entry.time < 5 * 60 * 1000) return entry.mint;
+  return null;
+}
+function setCachedMint(symbol, mint) {
+  stockMintCache.set(symbol.toUpperCase(), { mint, time: Date.now() });
+}
+
+// Look up a token via Jupiter's token search — covers thousands of tokens
+// including ALL xStocks dynamically (not just the hardcoded ones)
 async function findTokenBySymbol(symbol) {
   const upper = symbol.toUpperCase();
 
-  // Check known xStocks first
+  // 1. Fast path: known xStocks
   if (XSTOCKS[upper]) return { mint: XSTOCKS[upper], symbol: upper, source: "xstocks" };
 
-  // Check known crypto
+  // 2. Fast path: known crypto
   if (MINTS[upper]) return { mint: MINTS[upper], symbol: upper, source: "known" };
 
-  // Try Jupiter token search
-  try {
-    const res = await fetch(`https://api.jup.ag/tokens/v1/tagged/verified?query=${encodeURIComponent(symbol)}`);
-    const tokens = await res.json();
-    if (Array.isArray(tokens) && tokens.length > 0) {
-      // Find exact symbol match first
-      const exact = tokens.find(t => t.symbol?.toUpperCase() === upper);
-      if (exact) return { mint: exact.address, symbol: exact.symbol, name: exact.name, source: "jupiter" };
-      // Otherwise return first match
-      return { mint: tokens[0].address, symbol: tokens[0].symbol, name: tokens[0].name, source: "jupiter" };
-    }
-  } catch (e) {}
+  // 3. Cache hit
+  const cached = getCachedMint(upper);
+  if (cached) return { mint: cached, symbol: upper, source: "cache" };
 
-  // Try Jupiter's general search
+  // 4. Search for xStock variant (most common: SYMBOLx, xSYMBOL)
+  // Backed Finance uses naming like "AAPLx", "TSLAx" for xStock variants
+  for (const variant of [upper + "x", "x" + upper, upper + "X"]) {
+    try {
+      const res = await fetch(`https://lite-api.jup.ag/tokens/v2/search?query=${variant}`);
+      if (res.ok) {
+        const data = await res.json();
+        const tokens = Array.isArray(data) ? data : (data.tokens || data.data || []);
+        // Find one whose symbol exactly matches the variant or starts with our symbol
+        const match = tokens.find(t =>
+          t.symbol?.toUpperCase() === variant.toUpperCase() ||
+          (t.symbol?.toUpperCase().startsWith(upper) && (t.tags?.includes("xstock") || t.name?.toLowerCase().includes("xstock") || t.name?.toLowerCase().includes("backed")))
+        );
+        if (match && match.address) {
+          setCachedMint(upper, match.address);
+          return { mint: match.address, symbol: match.symbol, name: match.name, source: "jupiter_search" };
+        }
+      }
+    } catch (e) {}
+  }
+
+  // 5. General search by the raw symbol
   try {
-    const res = await fetch(`https://tokens.jup.ag/tokens?tags=verified`);
-    const tokens = await res.json();
-    if (Array.isArray(tokens)) {
+    const res = await fetch(`https://lite-api.jup.ag/tokens/v2/search?query=${upper}`);
+    if (res.ok) {
+      const data = await res.json();
+      const tokens = Array.isArray(data) ? data : (data.tokens || data.data || []);
       const exact = tokens.find(t => t.symbol?.toUpperCase() === upper);
-      if (exact) return { mint: exact.address, symbol: exact.symbol, name: exact.name, source: "jupiter" };
+      if (exact && exact.address) {
+        setCachedMint(upper, exact.address);
+        return { mint: exact.address, symbol: exact.symbol, name: exact.name, source: "jupiter_search" };
+      }
     }
   } catch (e) {}
 

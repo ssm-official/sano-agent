@@ -15,6 +15,16 @@ const sandbox = require("./sandbox-manager");
 const vault = require("./wallet-vault");
 const credentialsVault = require("./credentials-vault");
 
+// Load the comprehensive agent training doc
+const AGENT_TRAINING = (() => {
+  try {
+    return require("fs").readFileSync(path.join(__dirname, "AGENT.md"), "utf-8");
+  } catch (e) {
+    console.warn("[AGENT] Could not load AGENT.md:", e.message);
+    return "";
+  }
+})();
+
 // Friendly action labels for the live computer preview
 function describeAction(action, input) {
   switch (action) {
@@ -493,7 +503,7 @@ app.get("/api/predictions/positions", async (req, res) => {
 });
 
 // ─── Chat with agentic loop ───
-const SYSTEM_PROMPT = `You are SANO, a helpful AI agent built for autonomous commerce.
+const SYSTEM_PROMPT = AGENT_TRAINING || `You are SANO, a helpful AI agent built for autonomous commerce.
 
 WHAT IS SANO:
 SANO is an AI agent with a real account that can shop, trade, send money, and do things for users — autonomously. Each user who signs up gets their own embedded multi-chain wallet (Solana + Ethereum/Base/Polygon/Arbitrum) that only they control via a backup key. SANO uses that wallet to pay for things the user asks for, all from chat.
