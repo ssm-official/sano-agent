@@ -696,43 +696,60 @@ const EXECUTORS = {
   // Aggregates Polymarket + Kalshi liquidity directly on Solana — no bridging
   prediction_search: async (input) => {
     try {
-      let url;
-      if (input.query) {
-        // Use search endpoint for keyword queries
-        const params = new URLSearchParams({ query: input.query, limit: "8" });
-        url = `https://api.jup.ag/prediction/v1/events/search?${params}`;
-      } else {
-        // List trending or category
-        const params = new URLSearchParams({
-          filter: input.category ? "live" : "trending",
-          includeMarkets: "true",
-          end: "10"
-        });
-        if (input.category) params.set("category", input.category);
-        url = `https://api.jup.ag/prediction/v1/events?${params}`;
-      }
-      const res = await fetch(url);
+      // Always use /events with includeMarkets=true (the /events/search endpoint
+      // does NOT return markets, just event metadata, which is useless for betting)
+      const params = new URLSearchParams({
+        filter: "trending",
+        includeMarkets: "true",
+        end: "30"  // pull a wider list so we can filter client-side
+      });
+      if (input.category) params.set("category", input.category);
+
+      const res = await fetch(`https://api.jup.ag/prediction/v1/events?${params}`);
       const data = await res.json();
-      const events = data.data || data.events || [];
-      if (events.length === 0) return { message: `No prediction markets found${input.query ? ' for "' + input.query + '"' : ""}.` };
+      let events = data.data || data.events || [];
+
+      // Drop events with no markets (e.g. closed Up/Down 5-min markets that
+      // haven't opened yet) — they're not bettable
+      events = events.filter(ev => Array.isArray(ev.markets) && ev.markets.some(m => m.status === "open"));
+
+      // Client-side query filter against title and tags
+      if (input.query) {
+        const q = input.query.toLowerCase();
+        events = events.filter(ev => {
+          const title = (ev.metadata?.title || "").toLowerCase();
+          const tags = (ev.tags || []).join(" ").toLowerCase();
+          return title.includes(q) || tags.includes(q);
+        });
+      }
+
+      if (events.length === 0) {
+        return {
+          message: `No bettable prediction markets found${input.query ? ' for "' + input.query + '"' : ""}. Try a different topic, or browse trending markets without a filter.`
+        };
+      }
 
       return {
         events: events.slice(0, 8).map(ev => {
           const m = ev.metadata || {};
-          // Pick the first open market for each event
-          const market = (ev.markets || []).find(mk => mk.status === "open") || (ev.markets || [])[0];
-          const yesPrice = market?.pricing?.buyYesPriceUsd ? (market.pricing.buyYesPriceUsd / 1_000_000).toFixed(2) : null;
-          const noPrice = market?.pricing?.buyNoPriceUsd ? (market.pricing.buyNoPriceUsd / 1_000_000).toFixed(2) : null;
+          // Pick the first OPEN market for each event
+          const openMarkets = (ev.markets || []).filter(mk => mk.status === "open");
+          // For events with multiple sub-markets (like "what price will BTC hit"),
+          // include all of them so the user can pick
+          const subMarkets = openMarkets.slice(0, 5).map(mk => ({
+            market_id: mk.marketId,
+            title: mk.title,
+            yes_price: mk.pricing?.buyYesPriceUsd ? "$" + (mk.pricing.buyYesPriceUsd / 1_000_000).toFixed(2) : null,
+            no_price: mk.pricing?.buyNoPriceUsd ? "$" + (mk.pricing.buyNoPriceUsd / 1_000_000).toFixed(2) : null
+          }));
+
           return {
             event_id: ev.eventId,
-            market_id: market?.marketId || null,
-            title: m.title || market?.title || "Untitled",
+            title: m.title || "Untitled",
             category: ev.category,
-            yes_price: yesPrice ? `$${yesPrice}` : null,
-            no_price: noPrice ? `$${noPrice}` : null,
             volume_usd: ev.volumeUsd ? "$" + Math.round(parseFloat(ev.volumeUsd) / 1_000_000).toLocaleString() : null,
+            markets: subMarkets,
             close_time: m.closeTime,
-            is_live: ev.isLive,
             image_url: m.imageUrl
           };
         }),
