@@ -958,22 +958,26 @@ const EXECUTORS = {
       const signature = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: false, maxRetries: 3 });
       await connection.confirmTransaction(signature, "processed");
 
-      console.log(`  [BET] $${input.amount_usdc} on ${isYes ? "YES" : "NO"} ${input.market_id} | tx: ${signature}`);
+      console.log(`  [BET] $${betAmount} on ${isYes ? "YES" : "NO"} ${input.market_id} | tx: ${signature}`);
 
       // 4. Format the receipt with potential payout
       const myPriceRaw = isYes ? market.pricing?.buyYesPriceUsd : market.pricing?.buyNoPriceUsd;
       const myPrice = myPriceRaw ? myPriceRaw / 1_000_000 : null;
-      const potentialPayout = myPrice && myPrice > 0 ? (input.amount_usdc / myPrice).toFixed(2) : null;
+      const contracts = myPrice && myPrice > 0 ? betAmount / myPrice : null;
+      const potentialPayout = contracts ? contracts.toFixed(2) : null;
 
       return {
         ui_type: "trade_receipt",
         status: "completed",
         side: "buy",
         symbol: `${isYes ? "YES" : "NO"} bet`,
-        amount_usd: input.amount_usdc,
+        amount_usd: betAmount,
+        bet_price: myPrice ? `$${myPrice.toFixed(2)}` : null,
+        contracts: contracts ? parseFloat(contracts.toFixed(2)) : null,
+        potential_payout: potentialPayout ? `$${potentialPayout}` : null,
         signature,
         explorer: `https://solscan.io/tx/${signature}`,
-        message: `Bet placed: $${input.amount_usdc} on ${isYes ? "YES" : "NO"}.${potentialPayout ? ` Potential payout if it resolves your way: $${potentialPayout}.` : ""}`,
+        message: `Bet $${betAmount.toFixed(2)} on ${isYes ? "YES" : "NO"} at $${myPrice?.toFixed(2) || "?"} per contract.${potentialPayout ? ` ${parseFloat(potentialPayout).toFixed(1)} contracts = $${potentialPayout} payout if it wins.` : ""}`,
         order_pubkey: orderData.orderPubkey || orderData.order_pubkey
       };
     } catch (e) {
