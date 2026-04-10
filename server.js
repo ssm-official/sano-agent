@@ -308,6 +308,78 @@ app.get("/", (req, res) => {
 
 app.use(express.static("public", { index: false }));
 
+// ─── Chats: list, load, delete ───
+app.get("/api/chats", (req, res) => {
+  const email = req.query.email?.toLowerCase();
+  if (!email) return res.json({ error: "Email required" });
+  res.json({ chats: store.listChats(email) });
+});
+
+app.get("/api/chats/:id", (req, res) => {
+  const email = req.query.email?.toLowerCase();
+  if (!email) return res.json({ error: "Email required" });
+  const chat = store.loadChat(email, req.params.id);
+  if (!chat) return res.json({ error: "Not found" });
+  res.json(chat);
+});
+
+app.delete("/api/chats/:id", (req, res) => {
+  const email = req.query.email?.toLowerCase();
+  if (!email) return res.json({ error: "Email required" });
+  store.deleteChat(email, req.params.id);
+  res.json({ ok: true });
+});
+
+// ─── Settings ───
+app.get("/api/settings", (req, res) => {
+  const email = req.query.email?.toLowerCase();
+  if (!email) return res.json({ error: "Email required" });
+  res.json(store.loadSettings(email));
+});
+
+app.post("/api/settings", (req, res) => {
+  const { email, settings } = req.body;
+  if (!email) return res.json({ error: "Email required" });
+  store.saveSettings(email.toLowerCase(), settings || {});
+  res.json({ ok: true });
+});
+
+// ─── Orders (from Bitrefill) ───
+app.get("/api/orders", async (req, res) => {
+  try {
+    if (!process.env.BITREFILL_API_KEY) return res.json({ orders: [] });
+    const bitrefill = require("./bitrefill-client");
+    const result = await bitrefill.listOrders({ limit: 25, includeRedemption: true });
+    const orders = (result.response || result).orders || result.orders || [];
+    res.json({ orders });
+  } catch (e) {
+    res.json({ error: e.message, orders: [] });
+  }
+});
+
+// ─── Withdraw (simple wrapper over send_payment) ───
+app.post("/api/withdraw", async (req, res) => {
+  try {
+    const { email, token, amount, address } = req.body;
+    const key = email?.toLowerCase();
+    if (!key || !token || !amount || !address) {
+      return res.json({ error: "Email, token, amount, and address required" });
+    }
+    const keypair = vault.getKeypair(key);
+    if (!keypair) return res.json({ error: "Wallet not found" });
+
+    const result = await executeTool("send_payment",
+      { recipient: address, amount: parseFloat(amount), token },
+      keypair.publicKey.toBase58(),
+      keypair,
+      { userEmail: key, store }
+    );
+    res.json(result);
+  } catch (e) {
+    res.json({ error: e.message });
+  }
+});
+
 // ─── Account: Export all data (GDPR-style download) ───
 app.post("/api/account/export", async (req, res) => {
   try {
@@ -587,7 +659,17 @@ async function handleChat(req, res, message, sid, walletAddress, clientEmail) {
     return res.end();
   }
 
-  if (!sessions.has(sid)) sessions.set(sid, []);
+  // Load chat from disk if it exists and isn't in memory yet
+  if (!sessions.has(sid) && userEmail) {
+    const saved = store.loadChat(userEmail, sid);
+    if (saved && Array.isArray(saved.messages)) {
+      sessions.set(sid, saved.messages);
+    } else {
+      sessions.set(sid, []);
+    }
+  } else if (!sessions.has(sid)) {
+    sessions.set(sid, []);
+  }
   const history = sessions.get(sid);
 
   // Sanitize the existing history: drop any messages with empty/missing content
@@ -928,6 +1010,24 @@ When you learn something new about the user that would be useful to remember (th
     if (fullResponse && fullResponse.trim()) {
       cleanHistory.push({ role: "assistant", content: fullResponse });
     }
+
+    // Persist chat to disk so it survives restarts and shows in chat list
+    if (userEmail && cleanHistory.length > 0) {
+      try {
+        // Generate a title from the first user message if none exists
+        const firstUser = cleanHistory.find(m => m.role === "user" && typeof m.content === "string");
+        const title = firstUser ? firstUser.content.slice(0, 60) : "New chat";
+        store.saveChat(userEmail, sid, {
+          id: sid,
+          title,
+          messages: cleanHistory,
+          created: store.loadChat(userEmail, sid)?.created || new Date().toISOString()
+        });
+      } catch (e) {
+        console.log("  [CHAT] Save error:", e.message);
+      }
+    }
+
     res.write(`data: ${JSON.stringify({ type: "done", sessionId: sid })}\n\n`);
     res.end();
   } catch (err) {

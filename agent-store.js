@@ -147,8 +147,97 @@ function incrementUsage(usersMap, email) {
   saveUsers(usersMap);
 }
 
+// ─── Chat persistence ───
+const CHATS_DIR = path.join(DATA_DIR, "chats");
+
+function emailDir(email) {
+  return path.join(CHATS_DIR, emailToFilename(email));
+}
+
+function ensureChatsDir(email) {
+  const dir = emailDir(email);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function listChats(email) {
+  try {
+    const dir = emailDir(email);
+    if (!fs.existsSync(dir)) return [];
+    const files = fs.readdirSync(dir).filter(f => f.endsWith(".json"));
+    const chats = files.map(f => {
+      try {
+        const raw = fs.readFileSync(path.join(dir, f), "utf-8");
+        const data = JSON.parse(raw);
+        return {
+          id: f.replace(".json", ""),
+          title: data.title || "Untitled chat",
+          updated: data.updated || data.created,
+          created: data.created
+        };
+      } catch (e) { return null; }
+    }).filter(Boolean);
+    chats.sort((a, b) => (b.updated || "").localeCompare(a.updated || ""));
+    return chats;
+  } catch (e) {
+    return [];
+  }
+}
+
+function loadChat(email, chatId) {
+  try {
+    const file = path.join(emailDir(email), `${chatId}.json`);
+    if (!fs.existsSync(file)) return null;
+    return JSON.parse(fs.readFileSync(file, "utf-8"));
+  } catch (e) {
+    return null;
+  }
+}
+
+function saveChat(email, chatId, data) {
+  ensureChatsDir(email);
+  const file = path.join(emailDir(email), `${chatId}.json`);
+  atomicWrite(file, JSON.stringify({
+    ...data,
+    updated: new Date().toISOString()
+  }, null, 2));
+}
+
+function deleteChat(email, chatId) {
+  try {
+    const file = path.join(emailDir(email), `${chatId}.json`);
+    if (fs.existsSync(file)) fs.unlinkSync(file);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+// ─── Settings ───
+const SETTINGS_DIR = path.join(DATA_DIR, "settings");
+
+function loadSettings(email) {
+  try {
+    const file = path.join(SETTINGS_DIR, emailToFilename(email) + ".json");
+    if (!fs.existsSync(file)) return { theme: "light", language: "en", country: "US", shipping_address: "" };
+    return JSON.parse(fs.readFileSync(file, "utf-8"));
+  } catch (e) {
+    return { theme: "light", language: "en", country: "US", shipping_address: "" };
+  }
+}
+
+function saveSettings(email, settings) {
+  if (!fs.existsSync(SETTINGS_DIR)) fs.mkdirSync(SETTINGS_DIR, { recursive: true });
+  const file = path.join(SETTINGS_DIR, emailToFilename(email) + ".json");
+  atomicWrite(file, JSON.stringify(settings, null, 2));
+}
+
 module.exports = {
   loadUsers, saveUsers,
   loadMemory, saveMemory, rememberFact, forgetFact,
-  getMemoryPath, getUsage, incrementUsage
+  getMemoryPath, getUsage, incrementUsage,
+  // Chat persistence
+  listChats, loadChat, saveChat, deleteChat,
+  // Settings
+  loadSettings, saveSettings
 };

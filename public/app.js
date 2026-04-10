@@ -8,6 +8,35 @@ let streaming = false;
 let userEmail = null;
 let walletAddress = null;
 let authToken = null;
+let userSettings = { theme: "light", language: "en", country: "US", shipping_address: "" };
+
+// ─── Theme ───
+function applyTheme(theme) {
+  const actual = theme === "system"
+    ? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
+    : theme;
+  document.documentElement.classList.toggle("dark", actual === "dark");
+  // Update theme toggle icons
+  const moon = document.querySelector(".icon-moon");
+  const sun = document.querySelector(".icon-sun");
+  if (moon && sun) {
+    if (actual === "dark") {
+      moon.classList.add("hidden");
+      sun.classList.remove("hidden");
+    } else {
+      moon.classList.remove("hidden");
+      sun.classList.add("hidden");
+    }
+  }
+  // Update theme switcher in settings
+  document.querySelectorAll(".theme-option").forEach(b => {
+    b.classList.toggle("active", b.dataset.theme === theme);
+  });
+}
+
+// Apply saved theme immediately
+const savedTheme = localStorage.getItem("sano_theme") || "light";
+applyTheme(savedTheme);
 
 // ─── Auth ───
 const authScreen = $("#auth-screen");
@@ -793,6 +822,8 @@ async function send(text) {
             // Finalize any open computer card
             const openCards = messages.querySelectorAll(".computer-card:not(.done)");
             openCards.forEach(c => finishComputerCard(c));
+            // Reload chat list so new chats appear
+            if (typeof loadChatList === "function") setTimeout(loadChatList, 300);
             break;
           case "error":
             started = true; // mark started so the no-response fallback doesn't overwrite this
@@ -846,4 +877,268 @@ function md(text) {
   h = h.replace(/<p>(<ul>)/g, '$1').replace(/(<\/ul>)<\/p>/g, '$1');
   h = h.replace(/<p>(<pre>)/g, '$1').replace(/(<\/pre>)<\/p>/g, '$1');
   return h;
+}
+
+// ═════════════════════════════════════════════════════════════════
+//  NAVBAR / SETTINGS / CHATS / ORDERS / WITHDRAW
+// ═════════════════════════════════════════════════════════════════
+
+// ─── Theme toggle ───
+$("#theme-toggle").addEventListener("click", () => {
+  const current = localStorage.getItem("sano_theme") || "light";
+  const next = current === "dark" ? "light" : "dark";
+  localStorage.setItem("sano_theme", next);
+  applyTheme(next);
+  userSettings.theme = next;
+  saveUserSettings();
+});
+
+// ─── Settings modal ───
+$("#settings-btn").addEventListener("click", async () => {
+  $("#settings-modal").classList.remove("hidden");
+  // Load current settings
+  if (userEmail) {
+    try {
+      const res = await fetch(`/api/settings?email=${encodeURIComponent(userEmail)}`);
+      userSettings = await res.json();
+    } catch (e) {}
+  }
+  $("#setting-language").value = userSettings.language || "en";
+  $("#setting-country").value = userSettings.country || "US";
+  $("#setting-address").value = userSettings.shipping_address || "";
+  applyTheme(userSettings.theme || "light");
+});
+$("#settings-modal-close").addEventListener("click", () => $("#settings-modal").classList.add("hidden"));
+$("#settings-modal").addEventListener("click", e => { if (e.target.id === "settings-modal") $("#settings-modal").classList.add("hidden"); });
+
+$$(".theme-option").forEach(btn => {
+  btn.addEventListener("click", () => {
+    const theme = btn.dataset.theme;
+    localStorage.setItem("sano_theme", theme);
+    applyTheme(theme);
+    userSettings.theme = theme;
+  });
+});
+
+$("#settings-save").addEventListener("click", async () => {
+  userSettings.language = $("#setting-language").value;
+  userSettings.country = $("#setting-country").value;
+  userSettings.shipping_address = $("#setting-address").value;
+  await saveUserSettings();
+  $("#settings-modal").classList.add("hidden");
+});
+
+async function saveUserSettings() {
+  if (!userEmail) return;
+  try {
+    await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: userEmail, settings: userSettings })
+    });
+  } catch (e) {}
+}
+
+// ─── Chat list ───
+async function loadChatList() {
+  if (!userEmail) return;
+  try {
+    const res = await fetch(`/api/chats?email=${encodeURIComponent(userEmail)}`);
+    const data = await res.json();
+    renderChatList(data.chats || []);
+  } catch (e) {}
+}
+
+function renderChatList(chats) {
+  const list = $("#chat-list");
+  if (chats.length === 0) {
+    list.innerHTML = `<div style="padding:12px;font-size:12px;color:var(--text-4);text-align:center">No chats yet</div>`;
+    return;
+  }
+  list.innerHTML = chats.map(c => `
+    <div class="chat-list-item ${c.id === sessionId ? "active" : ""}" data-chat-id="${esc(c.id)}">
+      <div class="chat-list-item-title">${esc(c.title)}</div>
+      <button class="chat-list-delete" data-delete="${esc(c.id)}" title="Delete">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+      </button>
+    </div>
+  `).join("");
+
+  $$(".chat-list-item").forEach(el => {
+    el.addEventListener("click", async (e) => {
+      if (e.target.closest(".chat-list-delete")) return;
+      await switchToChat(el.dataset.chatId);
+    });
+  });
+  $$(".chat-list-delete").forEach(btn => {
+    btn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const id = btn.dataset.delete;
+      try {
+        await fetch(`/api/chats/${id}?email=${encodeURIComponent(userEmail)}`, { method: "DELETE" });
+        if (id === sessionId) {
+          sessionId = null;
+          localStorage.removeItem("sano_sid");
+          messages.innerHTML = "";
+          addWelcome();
+          $("#current-chat-title").textContent = "New chat";
+        }
+        loadChatList();
+      } catch (e) {}
+    });
+  });
+}
+
+async function switchToChat(chatId) {
+  try {
+    const res = await fetch(`/api/chats/${chatId}?email=${encodeURIComponent(userEmail)}`);
+    const chat = await res.json();
+    if (chat.error) return;
+    sessionId = chatId;
+    localStorage.setItem("sano_sid", sessionId);
+    $("#current-chat-title").textContent = chat.title || "Chat";
+    messages.innerHTML = "";
+    for (const m of chat.messages || []) {
+      if (typeof m.content === "string" && m.content.trim()) {
+        const textEl = addMsg(m.role, m.content);
+        if (m.role === "assistant") textEl.innerHTML = md(m.content);
+      }
+    }
+    loadChatList();
+  } catch (e) {
+    console.error("Failed to switch chat:", e);
+  }
+}
+
+// Override new-chat button
+const origNewChat = $("#new-chat");
+if (origNewChat) {
+  origNewChat.replaceWith(origNewChat.cloneNode(true));
+  $("#new-chat").addEventListener("click", () => {
+    sessionId = null;
+    localStorage.removeItem("sano_sid");
+    messages.innerHTML = "";
+    addWelcome();
+    $("#current-chat-title").textContent = "New chat";
+    loadChatList();
+  });
+}
+
+// ─── Orders panel ───
+$("#orders-btn").addEventListener("click", () => {
+  $("#orders-panel").classList.remove("hidden");
+  loadOrders();
+});
+$("#orders-close").addEventListener("click", () => $("#orders-panel").classList.add("hidden"));
+
+async function loadOrders() {
+  $("#orders-list").innerHTML = `<div class="portfolio-empty">Loading...</div>`;
+  try {
+    const res = await fetch("/api/orders");
+    const data = await res.json();
+    const orders = data.orders || [];
+    if (orders.length === 0) {
+      $("#orders-list").innerHTML = `<div class="portfolio-empty">No orders yet. Buy something to get started.</div>`;
+      return;
+    }
+    $("#orders-list").innerHTML = orders.map(o => {
+      const firstItem = (o.cart_items && o.cart_items[0]) || {};
+      const name = firstItem.name || o.product_name || "Order";
+      const amount = o.payment_info?.altcoinPrice || firstItem.payment_price || o.total || "—";
+      const status = o.payment_status || o.status || "paid";
+      const date = o.created_time || o.created || "";
+      return `
+        <div class="order-row">
+          <div class="order-info">
+            <div class="order-name">${esc(name)}</div>
+            <div class="order-meta">${esc(new Date(date).toLocaleString())} \u2022 <span class="order-status ${status.toLowerCase()}">${esc(status)}</span></div>
+          </div>
+          <div class="order-price">$${esc(String(amount))}</div>
+        </div>
+      `;
+    }).join("");
+  } catch (e) {
+    $("#orders-list").innerHTML = `<div class="portfolio-empty">Couldn't load orders.</div>`;
+  }
+}
+
+// ─── Withdraw modal ───
+$("#withdraw-btn").addEventListener("click", () => {
+  $("#withdraw-modal").classList.remove("hidden");
+  $("#withdraw-error").classList.add("hidden");
+});
+$("#withdraw-modal-close").addEventListener("click", () => $("#withdraw-modal").classList.add("hidden"));
+$("#withdraw-modal").addEventListener("click", e => { if (e.target.id === "withdraw-modal") $("#withdraw-modal").classList.add("hidden"); });
+
+$("#withdraw-submit").addEventListener("click", async () => {
+  const token = $("#withdraw-asset").value;
+  const amount = parseFloat($("#withdraw-amount").value);
+  const address = $("#withdraw-address").value.trim();
+
+  if (!amount || amount <= 0) {
+    $("#withdraw-error").textContent = "Enter a valid amount.";
+    $("#withdraw-error").classList.remove("hidden");
+    return;
+  }
+  if (!address) {
+    $("#withdraw-error").textContent = "Enter a destination address.";
+    $("#withdraw-error").classList.remove("hidden");
+    return;
+  }
+
+  $("#withdraw-submit").disabled = true;
+  $("#withdraw-submit").textContent = "Sending...";
+  $("#withdraw-error").classList.add("hidden");
+
+  try {
+    const res = await fetch("/api/withdraw", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: userEmail, token, amount, address })
+    });
+    const data = await res.json();
+    if (data.error) {
+      $("#withdraw-error").textContent = data.error;
+      $("#withdraw-error").classList.remove("hidden");
+    } else if (data.status === "completed") {
+      $("#withdraw-modal").classList.add("hidden");
+      $("#withdraw-amount").value = "";
+      $("#withdraw-address").value = "";
+      loadBalance();
+      alert(`Sent ${amount} ${token}!${data.explorer ? "\n" + data.explorer : ""}`);
+    } else {
+      $("#withdraw-error").textContent = data.message || "Withdraw failed";
+      $("#withdraw-error").classList.remove("hidden");
+    }
+  } catch (e) {
+    $("#withdraw-error").textContent = "Connection error.";
+    $("#withdraw-error").classList.remove("hidden");
+  }
+
+  $("#withdraw-submit").disabled = false;
+  $("#withdraw-submit").textContent = "Withdraw";
+});
+
+// Load chat list + settings on app entry
+// (hooked in via a small observer on the #app element — runs when it becomes visible)
+function bootstrapAfterAuth() {
+  loadChatList();
+  if (userEmail) {
+    fetch(`/api/settings?email=${encodeURIComponent(userEmail)}`).then(r => r.json()).then(s => {
+      userSettings = s;
+      if (s.theme) applyTheme(s.theme);
+    }).catch(() => {});
+  }
+}
+
+// Run bootstrap when the app becomes visible
+new MutationObserver(() => {
+  if (!appEl.classList.contains("hidden") && userEmail) {
+    bootstrapAfterAuth();
+  }
+}).observe(appEl, { attributes: true, attributeFilter: ["class"] });
+
+// Also run it immediately if already authenticated on page load
+if (!appEl.classList.contains("hidden") && userEmail) {
+  bootstrapAfterAuth();
 }
