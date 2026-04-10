@@ -692,53 +692,138 @@ const EXECUTORS = {
   },
 
   // ─── Prediction Markets (live) ───
+  // ─── Prediction Markets via Jupiter Prediction API (Solana-native) ───
+  // Aggregates Polymarket + Kalshi liquidity directly on Solana — no bridging
   prediction_search: async (input) => {
     try {
-      const res = await fetch(`https://gamma-api.polymarket.com/markets?_limit=5&active=true&search=${encodeURIComponent(input.query)}`);
-      const markets = await res.json();
-      if (!Array.isArray(markets) || markets.length === 0) return { message: `No markets found for "${input.query}".` };
+      let url;
+      if (input.query) {
+        // Use search endpoint for keyword queries
+        const params = new URLSearchParams({ query: input.query, limit: "8" });
+        url = `https://api.jup.ag/prediction/v1/events/search?${params}`;
+      } else {
+        // List trending or category
+        const params = new URLSearchParams({
+          filter: input.category ? "live" : "trending",
+          includeMarkets: "true",
+          end: "10"
+        });
+        if (input.category) params.set("category", input.category);
+        url = `https://api.jup.ag/prediction/v1/events?${params}`;
+      }
+      const res = await fetch(url);
+      const data = await res.json();
+      const events = data.data || data.events || [];
+      if (events.length === 0) return { message: `No prediction markets found${input.query ? ' for "' + input.query + '"' : ""}.` };
+
       return {
-        markets: markets.map(m => ({
-          id: m.conditionId || m.id, question: m.question,
-          outcomes: m.outcomes, prices: m.outcomePrices,
-          volume: m.volume ? "$" + parseFloat(m.volume).toLocaleString() : null,
-          url: `https://polymarket.com/event/${m.slug || m.id}`
-        })),
-        source: "polymarket"
+        events: events.slice(0, 8).map(ev => {
+          const m = ev.metadata || {};
+          // Pick the first open market for each event
+          const market = (ev.markets || []).find(mk => mk.status === "open") || (ev.markets || [])[0];
+          const yesPrice = market?.pricing?.buyYesPriceUsd ? (market.pricing.buyYesPriceUsd / 1_000_000).toFixed(2) : null;
+          const noPrice = market?.pricing?.buyNoPriceUsd ? (market.pricing.buyNoPriceUsd / 1_000_000).toFixed(2) : null;
+          return {
+            event_id: ev.eventId,
+            market_id: market?.marketId || null,
+            title: m.title || market?.title || "Untitled",
+            category: ev.category,
+            yes_price: yesPrice ? `$${yesPrice}` : null,
+            no_price: noPrice ? `$${noPrice}` : null,
+            volume_usd: ev.volumeUsd ? "$" + Math.round(parseFloat(ev.volumeUsd) / 1_000_000).toLocaleString() : null,
+            close_time: m.closeTime,
+            is_live: ev.isLive,
+            image_url: m.imageUrl
+          };
+        }),
+        source: "jupiter_predict"
       };
     } catch (e) {
-      return { error: `Couldn't search prediction markets.` };
+      return { error: `Couldn't load prediction markets: ${e.message}` };
     }
   },
 
-  // ─── Prediction Market Bet ───
-  // Polymarket runs on Polygon, not Solana. We need to bridge USDC cross-chain.
-  // For now, provide a deep link with prefilled amount and instructions.
-  prediction_bet: async (input, walletAddress) => {
-    if (!walletAddress) return { error: "Please sign in." };
+  // Place a real bet on a prediction market via Jupiter (Solana-native, no bridging)
+  prediction_bet: async (input, walletAddress, keypair) => {
+    if (!walletAddress) return { error: "Please sign in to place bets." };
+    if (!keypair) return { error: "Account not ready. Please sign out and back in." };
 
-    // Look up the market to get the URL
-    let marketUrl = `https://polymarket.com/event/${input.market_id}`;
-    let marketTitle = input.market_id;
+    const solCheck = await checkSolBalance(walletAddress);
+    if (solCheck) return solCheck;
 
     try {
-      const res = await fetch(`https://gamma-api.polymarket.com/markets/${input.market_id}`);
-      const market = await res.json();
-      if (market?.slug) {
-        marketUrl = `https://polymarket.com/event/${market.slug}`;
-        marketTitle = market.question;
+      // 1. Get market details to validate and get pricing
+      const marketRes = await fetch(`https://api.jup.ag/prediction/v1/markets/${input.market_id}`);
+      const market = await marketRes.json();
+      if (market.error || !market.marketId) {
+        return { error: `Market ${input.market_id} not found.` };
       }
-    } catch (e) {}
+      if (market.status && market.status !== "open") {
+        return { error: `Market is ${market.status}, can't bet right now.` };
+      }
 
-    return {
-      status: "ready_to_bet",
-      market: marketTitle,
-      outcome: input.outcome,
-      amount_usd: input.amount_usdc,
-      url: marketUrl,
-      message: `Ready to bet $${input.amount_usdc} on "${input.outcome}" for: ${marketTitle}. Polymarket runs on a different network (Polygon), so you'll need to complete the bet on Polymarket directly. Tap the link to go there.`,
-      note: "Cross-chain bridging coming soon — for now, click the link to complete your bet on Polymarket."
-    };
+      const isYes = input.outcome?.toLowerCase() === "yes" ||
+                    input.outcome?.toLowerCase() === "y" ||
+                    input.outcome === true;
+
+      // 2. Build the order request — Jupiter returns a base64 Solana tx
+      const usdcMint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+      const depositAmount = String(Math.round(input.amount_usdc * 1_000_000));
+
+      const orderRes = await fetch("https://api.jup.ag/prediction/v1/orders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ownerPubkey: walletAddress,
+          marketId: input.market_id,
+          isYes,
+          isBuy: true,
+          depositAmount,
+          depositMint: usdcMint
+        })
+      });
+
+      const orderData = await orderRes.json();
+      if (orderData.error) return { error: orderData.error };
+      const txB64 = orderData.transaction || orderData.tx || orderData.serializedTransaction;
+      if (!txB64) {
+        console.log("  [BET] No transaction in response:", JSON.stringify(orderData).slice(0, 300));
+        return { error: "Couldn't build the bet order. Try a different amount or market." };
+      }
+
+      // 3. Sign and submit
+      const txBuf = Buffer.from(txB64, "base64");
+      const tx = VersionedTransaction.deserialize(txBuf);
+      tx.sign([keypair]);
+
+      const signature = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: false, maxRetries: 3 });
+      await connection.confirmTransaction(signature, "confirmed");
+
+      console.log(`  [BET] $${input.amount_usdc} on ${isYes ? "YES" : "NO"} ${input.market_id} | tx: ${signature}`);
+
+      // 4. Format the receipt with potential payout
+      const myPriceRaw = isYes ? market.pricing?.buyYesPriceUsd : market.pricing?.buyNoPriceUsd;
+      const myPrice = myPriceRaw ? myPriceRaw / 1_000_000 : null;
+      const potentialPayout = myPrice && myPrice > 0 ? (input.amount_usdc / myPrice).toFixed(2) : null;
+
+      return {
+        ui_type: "trade_receipt",
+        status: "completed",
+        side: "buy",
+        symbol: `${isYes ? "YES" : "NO"} bet`,
+        amount_usd: input.amount_usdc,
+        signature,
+        explorer: `https://solscan.io/tx/${signature}`,
+        message: `Bet placed: $${input.amount_usdc} on ${isYes ? "YES" : "NO"}.${potentialPayout ? ` Potential payout if it resolves your way: $${potentialPayout}.` : ""}`,
+        order_pubkey: orderData.orderPubkey || orderData.order_pubkey
+      };
+    } catch (e) {
+      if (e.message?.includes("insufficient") || e.message?.includes("0x1")) {
+        return { error: `Not enough USDC for this bet.` };
+      }
+      console.error("  [BET] Error:", e.message);
+      return { error: `Bet failed: ${e.message}` };
+    }
   },
 
   // ─── BUY PRODUCT — Autonomous purchase via official Bitrefill CLI ───

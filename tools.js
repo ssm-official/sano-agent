@@ -140,30 +140,30 @@ const TOOLS = [
   },
 
   // ─── PREDICTION MARKETS ───
+  // Both work end-to-end on Solana via Jupiter Predict (aggregates Polymarket + Kalshi liquidity)
   {
-    name: "prediction_bet",
-    description: "Place a bet on prediction markets (Polymarket, Drift, etc). Bet on elections, crypto prices, sports, world events.",
+    name: "prediction_search",
+    description: "Search prediction markets via Jupiter Predict (aggregated from Polymarket and Kalshi). Returns trending markets, live markets, or filtered by category. Markets cover crypto, sports, politics, esports, culture, economics, tech. Each market has YES/NO contracts you can buy.",
     input_schema: {
       type: "object",
       properties: {
-        market_id: { type: "string" },
-        outcome: { type: "string", description: "The outcome you're betting on (e.g. 'Yes', 'No', team name)" },
-        amount_usdc: { type: "number" },
-        platform: { type: "string", enum: ["polymarket", "drift", "hedgehog"], default: "polymarket" }
+        query: { type: "string", description: "Search term (e.g. 'NBA finals', 'BTC above 150k', 'next president'). Leave empty to get trending markets." },
+        category: { type: "string", enum: ["crypto", "sports", "politics", "esports", "culture", "economics", "tech"], description: "Filter by category" }
       },
-      required: ["market_id", "outcome", "amount_usdc"]
+      required: []
     }
   },
   {
-    name: "prediction_search",
-    description: "Search active prediction markets. Find markets on politics, crypto, sports, tech, and world events.",
+    name: "prediction_bet",
+    description: "Place a real bet on a prediction market via Jupiter Predict. Buys YES or NO contracts with the user's USDC. Settles on Solana, no bridging needed. ALWAYS confirm the amount and outcome with the user before calling this tool.",
     input_schema: {
       type: "object",
       properties: {
-        query: { type: "string", description: "What to search for (e.g. 'BTC above 100k', 'next US president')" },
-        category: { type: "string", enum: ["crypto", "politics", "sports", "tech", "entertainment", "world"] }
+        market_id: { type: "string", description: "The marketId from prediction_search results (e.g. 'POLY-566142')" },
+        outcome: { type: "string", description: "Which side to bet on: 'yes' or 'no'", enum: ["yes", "no"] },
+        amount_usdc: { type: "number", description: "How much USDC to bet" }
       },
-      required: ["query"]
+      required: ["market_id", "outcome", "amount_usdc"]
     }
   },
 
