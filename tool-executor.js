@@ -790,41 +790,49 @@ const EXECUTORS = {
     return { error: `Couldn't find price for "${input.symbol}".` };
   },
 
-  // ─── Prediction Markets (live) ───
   // ─── Prediction Markets via Jupiter Prediction API (Solana-native) ───
   // Aggregates Polymarket + Kalshi liquidity directly on Solana — no bridging
   prediction_search: async (input) => {
     try {
-      // Always use /events with includeMarkets=true (the /events/search endpoint
-      // does NOT return markets, just event metadata, which is useless for betting)
-      const params = new URLSearchParams({
-        filter: "trending",
-        includeMarkets: "true",
-        end: "30"  // pull a wider list so we can filter client-side
-      });
-      if (input.category) params.set("category", input.category);
+      let events = [];
 
-      const res = await fetch(`https://api.jup.ag/prediction/v1/events?${params}`);
-      const data = await res.json();
-      let events = data.data || data.events || [];
-
-      // Drop events with no markets (e.g. closed Up/Down 5-min markets that
-      // haven't opened yet) — they're not bettable
-      events = events.filter(ev => Array.isArray(ev.markets) && ev.markets.some(m => m.status === "open"));
-
-      // Client-side query filter against title and tags
       if (input.query) {
-        const q = input.query.toLowerCase();
-        events = events.filter(ev => {
-          const title = (ev.metadata?.title || "").toLowerCase();
-          const tags = (ev.tags || []).join(" ").toLowerCase();
-          return title.includes(q) || tags.includes(q);
+        // QUERY PATH: /events/search finds matching event IDs across the FULL
+        // catalog (not just top trending), then we fetch each event by ID with
+        // markets included via /events/{eventId}.
+        const searchParams = new URLSearchParams({ query: input.query, limit: "12" });
+        const searchRes = await fetch(`https://api.jup.ag/prediction/v1/events/search?${searchParams}`);
+        const searchData = await searchRes.json();
+        const matchingIds = (searchData.data || []).slice(0, 10).map(e => e.eventId).filter(Boolean);
+
+        // Fetch each in parallel — /events/{id} returns markets unlike /events/search
+        const eventResponses = await Promise.all(
+          matchingIds.map(id =>
+            fetch(`https://api.jup.ag/prediction/v1/events/${id}`)
+              .then(r => r.ok ? r.json() : null)
+              .catch(() => null)
+          )
+        );
+        events = eventResponses.filter(Boolean);
+      } else {
+        // BROWSE PATH: trending list with markets included
+        const params = new URLSearchParams({
+          filter: "trending",
+          includeMarkets: "true",
+          end: "30"
         });
+        if (input.category) params.set("category", input.category);
+        const res = await fetch(`https://api.jup.ag/prediction/v1/events?${params}`);
+        const data = await res.json();
+        events = data.data || data.events || [];
       }
+
+      // Drop events with no open markets (closed sub-markets etc.)
+      events = events.filter(ev => Array.isArray(ev.markets) && ev.markets.some(m => m.status === "open"));
 
       if (events.length === 0) {
         return {
-          message: `No bettable prediction markets found${input.query ? ' for "' + input.query + '"' : ""}. Try a different topic, or browse trending markets without a filter.`
+          message: `No bettable markets found${input.query ? ' for "' + input.query + '"' : ""}. Try different keywords.`
         };
       }
 
