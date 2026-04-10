@@ -326,18 +326,25 @@ function renderPortfolio() {
     });
   }
 
-  // Prediction positions
+  // Prediction positions (Jupiter Predict format)
   for (const p of predictions) {
-    const sideRaw = p.isYes !== undefined ? (p.isYes ? "YES" : "NO") : (p.side || "");
-    // Jupiter uses 1,000,000 native units = $1.00
-    const valueUsd = (p.valueUsd || p.value_usd || 0) / 1_000_000;
-    const contracts = p.contracts || p.amount || 0;
+    const side = p.isYes ? "YES" : "NO";
+    const costUsd = (parseFloat(p.totalCostUsd) || 0) / 1_000_000;
+    const valueUsd = (parseFloat(p.valueUsd) || 0) / 1_000_000;
+    const payoutUsd = (parseFloat(p.payoutUsd) || 0) / 1_000_000;
+    const pnlUsd = (parseFloat(p.pnlUsd) || 0) / 1_000_000;
+    const contracts = parseInt(p.contracts) || 0;
+    const eventTitle = p.eventMetadata?.title || "";
+    const marketTitle = p.marketMetadata?.title || "";
+    const displayName = eventTitle ? `${eventTitle}${marketTitle ? " — " + marketTitle : ""}` : (p.market_id || "Prediction");
+
     positions.push({
       type: "prediction",
-      symbol: sideRaw || "BET",
-      name: (p.marketTitle || p.title || p.market_id || "Prediction") + (sideRaw ? ` · ${sideRaw}` : ""),
-      amount: contracts ? `${contracts} contracts` : "—",
+      symbol: side,
+      name: `${displayName} · ${side}`,
+      amount: `${contracts} contracts · Paid $${costUsd.toFixed(2)} · Payout $${payoutUsd.toFixed(2)}`,
       value_usd: valueUsd,
+      pnl: pnlUsd,
       market_id: p.marketId || p.market_id
     });
   }
@@ -361,7 +368,10 @@ function renderPortfolio() {
   // Sort by value desc
   positions.sort((a, b) => b.value_usd - a.value_usd);
 
-  const html = positions.map(p => `
+  const html = positions.map(p => {
+    const pnlClass = (p.pnl || 0) > 0 ? "up" : (p.pnl || 0) < 0 ? "down" : "flat";
+    const pnlText = p.pnl !== undefined ? `${p.pnl >= 0 ? "+" : ""}$${p.pnl.toFixed(2)}` : "";
+    return `
     <div class="position-row">
       <div class="position-icon ${p.type}">${esc(p.symbol.slice(0, 4))}</div>
       <div class="position-info">
@@ -370,12 +380,13 @@ function renderPortfolio() {
       </div>
       <div class="position-value">
         <div class="position-usd">$${p.value_usd.toFixed(2)}</div>
+        ${pnlText ? `<div class="position-change ${pnlClass}">${pnlText}</div>` : ""}
       </div>
       <div class="position-actions">
         <button class="position-sell-btn" data-symbol="${esc(p.symbol)}" data-type="${p.type}" data-market="${esc(p.market_id || '')}">Sell</button>
       </div>
-    </div>
-  `).join("");
+    </div>`;
+  }).join("");
   $("#portfolio-positions").innerHTML = html;
 
   // Wire up sell buttons
