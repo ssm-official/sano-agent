@@ -308,12 +308,13 @@ function renderPortfolio() {
 
   // Cash / crypto holdings
   for (const c of cash) {
+    if (!c.token) continue; // skip unidentified tokens
     if ((c.value_usd || 0) < 0.01 && c.token !== "USDC" && c.token !== "USDT") continue;
     positions.push({
       type: "crypto",
-      symbol: c.token,
-      name: c.token,
-      amount: c.balance.toFixed(c.token === "USDC" || c.token === "USDT" ? 2 : 4) + " " + c.token,
+      symbol: c.token || "???",
+      name: c.token || "Unknown",
+      amount: (c.balance || 0).toFixed(c.token === "USDC" || c.token === "USDT" ? 2 : 4) + " " + (c.token || ""),
       value_usd: c.value_usd || 0
     });
   }
