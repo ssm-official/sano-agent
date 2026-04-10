@@ -133,12 +133,22 @@ async function executeTool(name, input, walletAddress, keypair, context = {}) {
 const EXECUTORS = {
   // ─── Token Prices (live) ───
   token_price: async (input) => {
-    const mint = resolveMint(input.token?.toUpperCase());
+    // Try the lite-api v3 first (has xStocks + regular tokens)
+    const upper = input.token?.toUpperCase() || "";
+    let mint = MINTS[upper] || XSTOCKS[upper] || resolveMint(upper);
     try {
-      const res = await fetch(`https://api.jup.ag/price/v2?ids=${mint}`);
-      const data = await res.json();
-      if (data.data?.[mint]) {
-        return { token: input.token, price_usd: parseFloat(data.data[mint].price), source: "live" };
+      const res = await fetch(`https://lite-api.jup.ag/price/v3?ids=${mint}`);
+      if (res.ok) {
+        const data = await res.json();
+        const entry = data[mint];
+        if (entry?.usdPrice) {
+          return {
+            token: input.token,
+            price_usd: parseFloat(entry.usdPrice),
+            change_24h: entry.priceChange24h ? entry.priceChange24h.toFixed(2) + "%" : null,
+            source: "live"
+          };
+        }
       }
     } catch (e) {}
 
@@ -459,19 +469,25 @@ const EXECUTORS = {
       } catch (e) {}
     }
 
-    // Get prices for all tokens (batch)
+    // Get prices for all tokens (batch) — use lite-api/price/v3 which has
+    // xStocks AND regular tokens. The old api.jup.ag/price/v2 returns 404
+    // for xStock mints.
     const allMints = [MINTS.SOL, ...rawHoldings.map(h => h.mint)];
     let solPrice = 0;
     const prices = {};
     try {
-      const priceRes = await fetch(`https://api.jup.ag/price/v2?ids=${allMints.join(",")}`);
-      const priceData = await priceRes.json();
-      for (const mint of allMints) {
-        const p = parseFloat(priceData.data?.[mint]?.price || 0);
-        if (p > 0) prices[mint] = p;
+      const priceRes = await fetch(`https://lite-api.jup.ag/price/v3?ids=${allMints.join(",")}`);
+      if (priceRes.ok) {
+        const priceData = await priceRes.json();
+        for (const mint of allMints) {
+          const entry = priceData[mint];
+          if (entry?.usdPrice) prices[mint] = parseFloat(entry.usdPrice);
+        }
+        solPrice = prices[MINTS.SOL] || 0;
       }
-      solPrice = prices[MINTS.SOL] || 0;
-    } catch (e) {}
+    } catch (e) {
+      console.log("[PRICE] Error:", e.message);
+    }
 
     // Compute USD values
     let totalUsd = solAmount * solPrice;
@@ -683,10 +699,21 @@ const EXECUTORS = {
       }
     } catch (e) {}
     try {
-      const mint = resolveMint(input.symbol);
-      const res = await fetch(`https://api.jup.ag/price/v2?ids=${mint}`);
-      const data = await res.json();
-      if (data.data?.[mint]) return { symbol: input.symbol, price: "$" + parseFloat(data.data[mint].price).toLocaleString(), source: "live" };
+      const upper = input.symbol?.toUpperCase() || "";
+      const mint = MINTS[upper] || XSTOCKS[upper] || resolveMint(upper);
+      const res = await fetch(`https://lite-api.jup.ag/price/v3?ids=${mint}`);
+      if (res.ok) {
+        const data = await res.json();
+        const entry = data[mint];
+        if (entry?.usdPrice) {
+          return {
+            symbol: input.symbol,
+            price: "$" + parseFloat(entry.usdPrice).toLocaleString(),
+            change_24h: entry.priceChange24h ? entry.priceChange24h.toFixed(2) + "%" : null,
+            source: "live"
+          };
+        }
+      }
     } catch (e) {}
     return { error: `Couldn't find price for "${input.symbol}".` };
   },
