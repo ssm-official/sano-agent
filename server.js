@@ -31,9 +31,12 @@ const AGENT_TRAINING = (() => {
 
 // ─── Model selection ───
 // Sonnet 4.6 = smart base for tool-calling. Haiku 4.5 = fast/cheap fallback
-// for trivial intents (balance check, single command, simple Q&A).
-const MODEL_SMART = "claude-sonnet-4-6";
-const MODEL_FAST  = "claude-haiku-4-5-20251001";
+// for trivial intents. Sonnet 4 (May 2025) is kept around because Sonnet 4.6
+// dropped support for the computer_20250124 tool type — computer use sessions
+// have to stay on the older model.
+const MODEL_SMART    = "claude-sonnet-4-6";
+const MODEL_FAST     = "claude-haiku-4-5-20251001";
+const MODEL_COMPUTER = "claude-sonnet-4-20250514";
 
 // Strip leading slang vocatives so "yo grab $20 of nvda" classifies the same
 // as "grab $20 of nvda".
@@ -921,9 +924,17 @@ async function handleChat(req, res, message, sid, walletAddress, clientEmail) {
     // Computer use needs many more turns (each click+screenshot is one)
     const MAX_LOOPS = userRecord?.sandbox_id ? 30 : 5;
 
-    // Computer use is enabled if E2B is configured
-    // We don't create a sandbox until the agent actually uses the computer tool
-    const useComputerUse = !!process.env.E2B_API_KEY && !!userEmail;
+    // Computer use is only enabled when (a) E2B is configured AND (b) the user's
+    // message actually looks like it needs a browser. Sonnet 4.6 dropped the
+    // computer_20250124 tool type, so leaving computer use on for every chat
+    // would force every request onto Sonnet 4 — defeating the model bump.
+    // We detect intent by keyword: login, browse, navigate, screenshot, etc.
+    const computerKeywords = /\b(log ?in|sign ?in|sign ?up|browse|browser|navigate|screenshot|open (the )?website|open chrome|open firefox|click|fill out|sign me up|open tab|use the (web|browser)|on the website|amazon|ebay|instagram|facebook|twitter|linkedin|reddit|tiktok)\b/i;
+    const messageNeedsBrowser = computerKeywords.test(message || "");
+    // Also stay in computer-use mode if a sandbox is already alive for this user
+    // (mid-multi-turn flow — don't suddenly drop the tool).
+    const sandboxAlive = !!userRecord?.sandbox_id;
+    const useComputerUse = !!process.env.E2B_API_KEY && !!userEmail && (messageNeedsBrowser || sandboxAlive);
     const computerTool = useComputerUse ? [{
       type: "computer_20250124",
       name: "computer",
@@ -950,8 +961,9 @@ async function handleChat(req, res, message, sid, walletAddress, clientEmail) {
     // Pick the model + tool subset BEFORE entering the loop. Both are based on
     // the user's most recent message; subsequent tool-use turns reuse them so
     // the agent stays coherent within a single user request.
-    // Computer use forces the smart model regardless of the trivial-intent heuristic.
-    const selectedModel = useComputerUse ? MODEL_SMART : pickModel(message, cleanHistory);
+    // Computer use sessions have to stay on Sonnet 4 (May 2025) — Sonnet 4.6
+    // dropped the computer_20250124 tool type.
+    const selectedModel = useComputerUse ? MODEL_COMPUTER : pickModel(message, cleanHistory);
     // selectedTools holds only the regular TOOLS subset. The computer tool is
     // appended separately in streamArgs to avoid double-adding.
     const selectedTools = useComputerUse
