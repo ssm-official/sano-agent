@@ -952,8 +952,10 @@ async function handleChat(req, res, message, sid, walletAddress, clientEmail) {
     // the agent stays coherent within a single user request.
     // Computer use forces the smart model regardless of the trivial-intent heuristic.
     const selectedModel = useComputerUse ? MODEL_SMART : pickModel(message, cleanHistory);
+    // selectedTools holds only the regular TOOLS subset. The computer tool is
+    // appended separately in streamArgs to avoid double-adding.
     const selectedTools = useComputerUse
-      ? [...TOOLS, ...computerTool] // computer use needs everything available
+      ? TOOLS // computer use needs every regular tool available
       : selectTools(message, TOOLS);
 
     // Build cached system blocks. cache_control on the static prefix means
