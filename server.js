@@ -35,30 +35,44 @@ const AGENT_TRAINING = (() => {
 const MODEL_SMART = "claude-sonnet-4-6";
 const MODEL_FAST  = "claude-haiku-4-5-20251001";
 
-// Decide which model to use based on the user's latest message + history depth.
-// Conservative: only use Haiku when we're CONFIDENT the task is single-shot.
+// Strip leading slang vocatives so "yo grab $20 of nvda" classifies the same
+// as "grab $20 of nvda".
+function stripVocatives(text) {
+  return text.replace(/^(yo|hey|hi|hello|sup|bro|fam|bruh|fr|ngl|lowkey|yoo+|ayo)[\s,]+/i, "").trim();
+}
+
+// Decide which model to use. Conservative: only use Haiku when we're CONFIDENT
+// the task is single-shot. Multi-clause / multi-action / shopping / predictions
+// stay on Sonnet 4.6.
 function pickModel(message, history) {
-  const text = (message || "").toLowerCase().trim();
+  let text = (message || "").toLowerCase().trim();
   if (!text) return MODEL_SMART;
+  text = stripVocatives(text);
+
   // Long messages = probably multi-step
   if (text.length > 200) return MODEL_SMART;
-  // Mid-conversation tool loops should stay on the smart model
+  // Mid-conversation tool loops stay on the smart model
   if ((history?.length || 0) > 4) return MODEL_SMART;
-  // Anything that smells like multi-action → smart
-  if (/\band\b|\bthen\b|\balso\b|\bafter that\b/.test(text)) return MODEL_SMART;
-  // Computer use / shopping with credentials / predictions → smart
-  if (/\b(buy|order|shop|amazon|ebay|netflix|spotify|gift card|topup|top up)\b/.test(text)) return MODEL_SMART;
-  if (/\b(bet|prediction|polymarket|kalshi|market)\b/.test(text)) return MODEL_SMART;
+  // Multi-clause: commas usually mean multiple actions
+  if ((text.match(/,/g) || []).length >= 2) return MODEL_SMART;
+  // Conjunctions = multi-action
+  if (/\band\b|\bthen\b|\balso\b|\bafter that\b|\bplus\b/.test(text)) return MODEL_SMART;
+  // Shopping with credentials, accounts, complex flows → smart
+  if (/\b(amazon|ebay|netflix|spotify|gift card|topup|top up|subscribe|subscription)\b/.test(text)) return MODEL_SMART;
+  if (/\b(bet|prediction|polymarket|kalshi|wager|odds)\b/.test(text)) return MODEL_SMART;
   if (/\b(login|sign in|password|credential)\b/.test(text)) return MODEL_SMART;
+
   // Trivial single-shots → Haiku
-  if (/^(hi|hey|hello|sup|yo|gm|gn)\b/.test(text)) return MODEL_FAST;
-  if (/\b(balance|how much|what.?s in|portfolio|holdings|positions)\b/.test(text)) return MODEL_FAST;
+  if (/^(hi|hey|hello|sup|gm|gn|thanks|thx|ty|ok|aight|cool|nice|gucci|bet)\b/.test(text)) return MODEL_FAST;
+  if (/\b(balance|how much|wassup with my|what.?s in|portfolio|holdings|positions|my stuff|my money)\b/.test(text)) return MODEL_FAST;
   if (/^(list|show|view) (my )?(orders|alerts|history|transactions|chats)/.test(text)) return MODEL_FAST;
   if (/^cancel order /.test(text)) return MODEL_FAST;
   if (/^what is [a-z]{2,5}\??$/i.test(text)) return MODEL_FAST; // "what is MSFT"
   if (/^[a-z]{2,5}\??$/i.test(text)) return MODEL_FAST; // bare ticker
   if (/^(price|quote) [a-z]{2,5}/i.test(text)) return MODEL_FAST;
-  // Default: smart
+  // Single buy/sell of a single stock/token → Haiku is fine
+  if (/^(buy|sell|grab|snag|throw|ape|dump|ditch|get) /i.test(text) && !/\b(stop|profit|alert|then|and|after)\b/.test(text)) return MODEL_FAST;
+
   return MODEL_SMART;
 }
 
@@ -88,19 +102,19 @@ const TOOL_CATEGORY_MAP = {
 };
 
 function selectTools(message, allTools) {
-  const text = (message || "").toLowerCase();
+  const text = stripVocatives((message || "").toLowerCase());
   const enabled = new Set(TOOL_CATEGORY_MAP.core);
 
-  // Trading keywords
-  if (/\b(buy|sell|swap|trade|stock|stocks|aapl|tsla|nvda|msft|googl|amzn|meta|coin|spy|qqq|sol|btc|eth|usdc|jup|bonk|jupiter|price|quote|chart|stake|lend|borrow|yield|apy|limit|stop loss|take profit|alert|invest|portfolio|holdings)\b/.test(text)) {
+  // Trading keywords (incl. slang verbs and common tickers)
+  if (/\b(buy|sell|swap|trade|stock|stocks|aapl|tsla|nvda|msft|googl|amzn|meta|coin|spy|qqq|sol|btc|eth|usdc|jup|bonk|jupiter|price|quote|chart|stake|lend|borrow|yield|apy|limit|stop|loss|profit|alert|ping|invest|portfolio|holdings|positions|grab|snag|throw|ape|dump|ditch|moon|rugged|tank|tanked|protect|exit)\b/.test(text)) {
     TOOL_CATEGORY_MAP.trading.forEach(t => enabled.add(t));
   }
   // Shopping keywords
-  if (/\b(buy|shop|order|purchase|gift card|amazon|ebay|netflix|spotify|steam|roblox|gcash|gopay|topup|top up|subscribe|subscription|recharge|credential|password|login|sign in)\b/.test(text)) {
+  if (/\b(buy|shop|order|purchase|gift card|amazon|ebay|netflix|spotify|steam|roblox|gcash|gopay|topup|top up|recharge|subscribe|subscription|credential|password|login|sign in|earbuds|headphones|laptop|keyboard|mouse|phone|case)\b/.test(text)) {
     TOOL_CATEGORY_MAP.shopping.forEach(t => enabled.add(t));
   }
   // Prediction keywords
-  if (/\b(bet|wager|prediction|odds|market|polymarket|kalshi|sports|election|game|win|yes|no contract)\b/.test(text)) {
+  if (/\b(bet|wager|prediction|odds|market|polymarket|kalshi|sports|election|game|win|loser|winner|favorite|underdog)\b/.test(text)) {
     TOOL_CATEGORY_MAP.predictions.forEach(t => enabled.add(t));
   }
 
