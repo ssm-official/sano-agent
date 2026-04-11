@@ -29,6 +29,90 @@ const AGENT_TRAINING = (() => {
   }
 })();
 
+// ─── Model selection ───
+// Sonnet 4.6 = smart base for tool-calling. Haiku 4.5 = fast/cheap fallback
+// for trivial intents (balance check, single command, simple Q&A).
+const MODEL_SMART = "claude-sonnet-4-6";
+const MODEL_FAST  = "claude-haiku-4-5-20251001";
+
+// Decide which model to use based on the user's latest message + history depth.
+// Conservative: only use Haiku when we're CONFIDENT the task is single-shot.
+function pickModel(message, history) {
+  const text = (message || "").toLowerCase().trim();
+  if (!text) return MODEL_SMART;
+  // Long messages = probably multi-step
+  if (text.length > 200) return MODEL_SMART;
+  // Mid-conversation tool loops should stay on the smart model
+  if ((history?.length || 0) > 4) return MODEL_SMART;
+  // Anything that smells like multi-action → smart
+  if (/\band\b|\bthen\b|\balso\b|\bafter that\b/.test(text)) return MODEL_SMART;
+  // Computer use / shopping with credentials / predictions → smart
+  if (/\b(buy|order|shop|amazon|ebay|netflix|spotify|gift card|topup|top up)\b/.test(text)) return MODEL_SMART;
+  if (/\b(bet|prediction|polymarket|kalshi|market)\b/.test(text)) return MODEL_SMART;
+  if (/\b(login|sign in|password|credential)\b/.test(text)) return MODEL_SMART;
+  // Trivial single-shots → Haiku
+  if (/^(hi|hey|hello|sup|yo|gm|gn)\b/.test(text)) return MODEL_FAST;
+  if (/\b(balance|how much|what.?s in|portfolio|holdings|positions)\b/.test(text)) return MODEL_FAST;
+  if (/^(list|show|view) (my )?(orders|alerts|history|transactions|chats)/.test(text)) return MODEL_FAST;
+  if (/^cancel order /.test(text)) return MODEL_FAST;
+  if (/^what is [a-z]{2,5}\??$/i.test(text)) return MODEL_FAST; // "what is MSFT"
+  if (/^[a-z]{2,5}\??$/i.test(text)) return MODEL_FAST; // bare ticker
+  if (/^(price|quote) [a-z]{2,5}/i.test(text)) return MODEL_FAST;
+  // Default: smart
+  return MODEL_SMART;
+}
+
+// ─── Tool subset router ───
+// Most prompts only need a fraction of the ~37 tools. Sending all of them every
+// turn balloons input cost and gives the model more chances to misroute.
+// Always include core tools; add categories based on intent keywords.
+const TOOL_CATEGORY_MAP = {
+  core: [
+    "wallet_balance", "portfolio_summary", "transaction_history",
+    "send_payment", "request_payment",
+    "remember", "forget",
+    "list_orders", "cancel_order"
+  ],
+  shopping: [
+    "product_search", "buy_product", "buy_gift_card", "list_gift_card_merchants",
+    "save_credential", "get_credential", "list_credentials", "delete_credential",
+    "subscription_create", "subscription_list"
+  ],
+  trading: [
+    "stock_trade", "stock_quote",
+    "jupiter_swap", "jupiter_quote", "token_price",
+    "limit_order", "stop_loss", "take_profit", "price_alert",
+    "defi_stake", "defi_lend", "defi_borrow", "defi_yield_search"
+  ],
+  predictions: ["prediction_search", "prediction_bet"]
+};
+
+function selectTools(message, allTools) {
+  const text = (message || "").toLowerCase();
+  const enabled = new Set(TOOL_CATEGORY_MAP.core);
+
+  // Trading keywords
+  if (/\b(buy|sell|swap|trade|stock|stocks|aapl|tsla|nvda|msft|googl|amzn|meta|coin|spy|qqq|sol|btc|eth|usdc|jup|bonk|jupiter|price|quote|chart|stake|lend|borrow|yield|apy|limit|stop loss|take profit|alert|invest|portfolio|holdings)\b/.test(text)) {
+    TOOL_CATEGORY_MAP.trading.forEach(t => enabled.add(t));
+  }
+  // Shopping keywords
+  if (/\b(buy|shop|order|purchase|gift card|amazon|ebay|netflix|spotify|steam|roblox|gcash|gopay|topup|top up|subscribe|subscription|recharge|credential|password|login|sign in)\b/.test(text)) {
+    TOOL_CATEGORY_MAP.shopping.forEach(t => enabled.add(t));
+  }
+  // Prediction keywords
+  if (/\b(bet|wager|prediction|odds|market|polymarket|kalshi|sports|election|game|win|yes|no contract)\b/.test(text)) {
+    TOOL_CATEGORY_MAP.predictions.forEach(t => enabled.add(t));
+  }
+
+  // If we matched no specialty category, send everything (ambiguous prompt)
+  const specialtyHit = TOOL_CATEGORY_MAP.trading.some(t => enabled.has(t))
+                    || TOOL_CATEGORY_MAP.shopping.some(t => enabled.has(t))
+                    || TOOL_CATEGORY_MAP.predictions.some(t => enabled.has(t));
+  if (!specialtyHit) return allTools;
+
+  return allTools.filter(t => enabled.has(t.name));
+}
+
 // Friendly action labels for the live computer preview
 function describeAction(action, input) {
   switch (action) {
@@ -749,14 +833,20 @@ async function handleChat(req, res, message, sid, walletAddress, clientEmail) {
   const nextMonday = new Date(now);
   nextMonday.setDate(now.getDate() + ((1 - now.getDay() + 7) % 7 || 7));
 
-  let systemPrompt = SYSTEM_PROMPT + `\n\nCONTEXT:
+  // ── System prompt is split into a CACHED static prefix (the AGENT.md training,
+  //    which is identical for every request) and a small DYNAMIC suffix (memory,
+  //    settings, dates, wallet). Anthropic charges 10% for cache reads, so the
+  //    big AGENT.md block is effectively free after the first request.
+  const staticPrefix = SYSTEM_PROMPT;
+
+  let dynamicSuffix = `CONTEXT:
 - Today is ${dayName}, ${todayStr}
 - Next Friday is ${nextFriday.toISOString().split("T")[0]}
 - Next Monday is ${nextMonday.toISOString().split("T")[0]}
 - When the user says "next Friday", "this weekend", "tomorrow", etc., calculate the correct date yourself. NEVER ask the user to provide a date in YYYY-MM-DD format. Just figure it out.`;
 
   if (walletAddress) {
-    systemPrompt += `\nUser's account address: ${walletAddress}`;
+    dynamicSuffix += `\nUser's account address: ${walletAddress}`;
   }
 
   // Inject the user's memory from server file storage
@@ -764,14 +854,7 @@ async function handleChat(req, res, message, sid, walletAddress, clientEmail) {
   if (userEmail) {
     const memory = store.loadMemory(userEmail);
     if (memory) {
-      systemPrompt += `\n\n=== YOUR MEMORY ABOUT THIS USER ===
-This is what you remember about them from previous conversations. Use it to personalize your responses, skip questions you already know the answer to, and refer to past activity when relevant.
-
-${memory}
-
-=== END MEMORY ===
-
-When you learn something new about the user that would be useful to remember (their name, preferences, sizes, important dates, recurring needs), call the remember tool to save it. When something becomes outdated, use forget. Keep memory clean and useful.`;
+      dynamicSuffix += `\n\n=== MEMORY ABOUT THIS USER ===\n${memory}\n=== END MEMORY ===\n\nUse remember/forget to keep this current.`;
     }
 
     // Inject the user's settings (language, country, shipping address)
@@ -792,7 +875,7 @@ When you learn something new about the user that would be useful to remember (th
         ctx.push("Shipping address:\n" + lines.join("\n"));
       }
       if (ctx.length > 0) {
-        systemPrompt += `\n\n=== USER SETTINGS ===\n${ctx.join("\n\n")}\n=== END SETTINGS ===\n\nUse this info automatically. Don't ask for shipping info or country if it's already here.`;
+        dynamicSuffix += `\n\n=== USER SETTINGS ===\n${ctx.join("\n\n")}\n=== END SETTINGS ===\n\nUse this automatically. Don't re-ask for it.`;
       }
     } catch (e) {}
   }
@@ -850,15 +933,43 @@ When you learn something new about the user that would be useful to remember (th
       return newId;
     }
 
+    // Pick the model + tool subset BEFORE entering the loop. Both are based on
+    // the user's most recent message; subsequent tool-use turns reuse them so
+    // the agent stays coherent within a single user request.
+    // Computer use forces the smart model regardless of the trivial-intent heuristic.
+    const selectedModel = useComputerUse ? MODEL_SMART : pickModel(message, cleanHistory);
+    const selectedTools = useComputerUse
+      ? [...TOOLS, ...computerTool] // computer use needs everything available
+      : selectTools(message, TOOLS);
+
+    // Build cached system blocks. cache_control on the static prefix means
+    // Anthropic caches AGENT.md (5min TTL by default). The dynamic suffix
+    // (memory/settings/dates) is uncached because it changes per user/day.
+    const systemBlocks = [
+      { type: "text", text: staticPrefix, cache_control: { type: "ephemeral" } },
+      { type: "text", text: dynamicSuffix }
+    ];
+
+    // Cache the tools array too — same trick: put cache_control on the LAST tool
+    // and Anthropic caches everything up to and including that point.
+    const cachedTools = selectedTools.map((t, i) => {
+      if (i === selectedTools.length - 1) {
+        return { ...t, cache_control: { type: "ephemeral" } };
+      }
+      return t;
+    });
+
+    console.log(`  [CHAT] model=${selectedModel.split("-").slice(-2).join("-")} tools=${selectedTools.length}/${TOOLS.length}`);
+
     while (loopCount < MAX_LOOPS) {
       loopCount++;
 
       // Use the beta namespace for computer use (required by the SDK for beta tools)
       const streamArgs = {
-        model: "claude-sonnet-4-20250514",
+        model: selectedModel,
         max_tokens: 4096,
-        system: systemPrompt,
-        tools: [...TOOLS, ...computerTool],
+        system: systemBlocks,
+        tools: useComputerUse ? [...cachedTools, ...computerTool] : cachedTools,
         messages
       };
 
