@@ -931,10 +931,12 @@ async function handleChat(req, res, message, sid, walletAddress, clientEmail) {
     // We detect intent by keyword: login, browse, navigate, screenshot, etc.
     const computerKeywords = /\b(log ?in|sign ?in|sign ?up|browse|browser|navigate|screenshot|open (the )?website|open chrome|open firefox|click|fill out|sign me up|open tab|use the (web|browser)|on the website|amazon|ebay|instagram|facebook|twitter|linkedin|reddit|tiktok)\b/i;
     const messageNeedsBrowser = computerKeywords.test(message || "");
-    // Also stay in computer-use mode if a sandbox is already alive for this user
-    // (mid-multi-turn flow — don't suddenly drop the tool).
-    const sandboxAlive = !!userRecord?.sandbox_id;
-    const useComputerUse = !!process.env.E2B_API_KEY && !!userEmail && (messageNeedsBrowser || sandboxAlive);
+    // Only enable computer use when the message explicitly needs a browser.
+    // Don't check for a stale sandbox_id — old sandbox IDs linger in user
+    // records long after the sandbox dies, which would force every request
+    // onto the old Sonnet 4 model (has tight rate limits). The sandbox is
+    // created lazily when the agent actually calls the computer tool.
+    const useComputerUse = !!process.env.E2B_API_KEY && !!userEmail && messageNeedsBrowser;
     const computerTool = useComputerUse ? [{
       type: "computer_20250124",
       name: "computer",
