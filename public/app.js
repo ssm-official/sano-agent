@@ -489,6 +489,79 @@ $("#copy-address").addEventListener("click", () => {
   }
 });
 
+// ─── Slash Commands ───
+const SLASH_COMMANDS = [
+  { cmd: "/stocks",     icon: "📈", label: "Stocks",           desc: "Browse available stocks",       prompt: "Show me available stocks with prices: AAPL, TSLA, NVDA, MSFT, GOOGL, AMZN, META, SPY, QQQ" },
+  { cmd: "/balance",    icon: "💰", label: "Balance",          desc: "Check your wallet",             prompt: "what's my balance" },
+  { cmd: "/portfolio",  icon: "📊", label: "Portfolio",        desc: "View all your holdings",        prompt: "show my portfolio" },
+  { cmd: "/orders",     icon: "📋", label: "Orders",           desc: "View active orders & alerts",   prompt: "list my orders" },
+  { cmd: "/predictions",icon: "🎯", label: "Predictions",     desc: "Trending prediction markets",   prompt: "show me trending prediction markets" },
+  { cmd: "/send",       icon: "💸", label: "Send",             desc: "Send USDC to someone",          prompt: "/send " },
+  { cmd: "/buy",        icon: "🛒", label: "Buy",              desc: "Buy a stock, crypto, or item",  prompt: "/buy " },
+  { cmd: "/swap",       icon: "🔄", label: "Swap",             desc: "Swap tokens on Jupiter",        prompt: "/swap " },
+  { cmd: "/stoploss",   icon: "🛡️", label: "Stop Loss",        desc: "Set a stop loss on a position", prompt: "/stoploss " },
+  { cmd: "/takeprofit", icon: "🎯", label: "Take Profit",      desc: "Set a take profit target",      prompt: "/takeprofit " },
+  { cmd: "/alert",      icon: "🔔", label: "Price Alert",      desc: "Get notified at a price",       prompt: "/alert " },
+  { cmd: "/shop",       icon: "🛍️", label: "Shop",             desc: "Search for products to buy",    prompt: "/shop " },
+  { cmd: "/history",    icon: "📜", label: "History",           desc: "Recent transactions",           prompt: "show my recent transactions" },
+  { cmd: "/help",       icon: "❓", label: "Help",              desc: "What can SANO do",              prompt: "what can you do" },
+];
+
+const slashMenu = $("#slash-menu");
+let slashIndex = 0;
+let slashFiltered = [];
+
+function renderSlashMenu(filter) {
+  const q = (filter || "").toLowerCase().replace("/", "");
+  slashFiltered = SLASH_COMMANDS.filter(c =>
+    c.cmd.slice(1).startsWith(q) || c.label.toLowerCase().startsWith(q)
+  );
+  if (slashFiltered.length === 0) {
+    slashMenu.classList.add("hidden");
+    return;
+  }
+  slashIndex = Math.min(slashIndex, slashFiltered.length - 1);
+  slashMenu.innerHTML = slashFiltered.map((c, i) => `
+    <div class="slash-item${i === slashIndex ? " active" : ""}" data-idx="${i}">
+      <span class="slash-icon">${c.icon}</span>
+      <div class="slash-text">
+        <span class="slash-cmd">${esc(c.cmd)}</span>
+        <span class="slash-desc">${esc(c.desc)}</span>
+      </div>
+    </div>
+  `).join("");
+  slashMenu.classList.remove("hidden");
+
+  // Click handler
+  slashMenu.querySelectorAll(".slash-item").forEach(el => {
+    el.addEventListener("mousedown", e => {
+      e.preventDefault(); // don't blur the input
+      pickSlashItem(parseInt(el.dataset.idx));
+    });
+  });
+}
+
+function pickSlashItem(idx) {
+  const item = slashFiltered[idx];
+  if (!item) return;
+  slashMenu.classList.add("hidden");
+  // If prompt ends with space, it's a partial — put it in the input for the user to finish
+  if (item.prompt.endsWith(" ")) {
+    input.value = item.prompt;
+    input.focus();
+    sendBtn.disabled = true;
+  } else {
+    input.value = "";
+    send(item.prompt);
+  }
+}
+
+function closeSlashMenu() {
+  slashMenu.classList.add("hidden");
+  slashFiltered = [];
+  slashIndex = 0;
+}
+
 // ─── Chat ───
 const input = $("#input");
 const sendBtn = $("#send");
@@ -498,9 +571,44 @@ input.addEventListener("input", () => {
   sendBtn.disabled = !input.value.trim() || streaming;
   input.style.height = "auto";
   input.style.height = Math.min(input.scrollHeight, 120) + "px";
+
+  // Slash menu trigger
+  const val = input.value;
+  if (val.startsWith("/") && !val.includes(" ")) {
+    slashIndex = 0;
+    renderSlashMenu(val);
+  } else {
+    closeSlashMenu();
+  }
 });
 
 input.addEventListener("keydown", e => {
+  // Slash menu navigation
+  if (!slashMenu.classList.contains("hidden")) {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      slashIndex = Math.min(slashIndex + 1, slashFiltered.length - 1);
+      renderSlashMenu(input.value);
+      return;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      slashIndex = Math.max(slashIndex - 1, 0);
+      renderSlashMenu(input.value);
+      return;
+    }
+    if (e.key === "Enter" || e.key === "Tab") {
+      e.preventDefault();
+      pickSlashItem(slashIndex);
+      return;
+    }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      closeSlashMenu();
+      return;
+    }
+  }
+
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
     if (input.value.trim() && !streaming) send(input.value.trim());
@@ -883,7 +991,30 @@ function renderTradeReceipt(r) {
 // Global abort controller so ESC can cancel an in-flight chat
 let chatAbortController = null;
 
+// Translate /commands to natural language before sending to the AI
+function translateSlash(text) {
+  const t = text.trim();
+  if (!t.startsWith("/")) return t;
+  const parts = t.split(/\s+/);
+  const cmd = parts[0].toLowerCase();
+  const rest = parts.slice(1).join(" ");
+  switch (cmd) {
+    case "/buy":        return rest ? `buy ${rest}` : "what should I buy?";
+    case "/sell":       return rest ? `sell ${rest}` : "sell what?";
+    case "/send":       return rest ? `send ${rest}` : "send to who?";
+    case "/swap":       return rest ? `swap ${rest}` : "swap what?";
+    case "/stoploss":   return rest ? `set a stop loss on ${rest}` : "set a stop loss on what?";
+    case "/takeprofit": return rest ? `set take profit on ${rest}` : "set take profit on what?";
+    case "/alert":      return rest ? `alert me when ${rest}` : "set an alert on what?";
+    case "/shop":       return rest ? `find me ${rest}` : "what do you want to buy?";
+    case "/price":      return rest ? `price of ${rest}` : "price of what?";
+    default:            return t; // pass through — menu commands already have full prompts
+  }
+}
+
 async function send(text) {
+  closeSlashMenu();
+  text = translateSlash(text);
   streaming = true;
   sendBtn.disabled = true;
   appEl.classList.add("streaming");
